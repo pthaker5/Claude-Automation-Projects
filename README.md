@@ -90,12 +90,34 @@ sample_data/
 
 Adjust the paths in the CONFIG block of each script for your machine.
 
+## Expedite per-month normalization (fixed)
+
+The expedite baseline window (Aug 1 2024 – Aug 30 2025) spans **13 calendar
+months**, but the old logic divided the annual expedite count by **12**, which
+inflated the per-month baseline. This is now corrected:
+
+- `build_baselines.py` **auto-detects** the number of distinct year-months in the
+  data (13 for this window) and writes the per-month figure into the baseline.
+- `akzo_month_close_engine.py` uses that precomputed value; if it's missing it
+  falls back to `EXPEDITE_MONTHS_IN_WINDOW = 13`.
+
+To force a fixed divisor (e.g. lock the window to exactly 12 months), set
+`EXPEDITE_MONTHS_IN_WINDOW` in `build_baselines.py`.
+
+## Validation
+
+There is no built-in validator. To check a month: run the engine via SQL, then
+send the three output workbooks. They are cross-checked against the manually
+closed numbers in the trackers — for April the authoritative targets are the
+Closing `April 2026 Summary` and Procurement `Summary ANT Tracker 24` column
+**`April'26` (col 70)**, which reconcile to Procurement **159,614.36** / Ops
+**134,200.54**. (Note: the separate `Apr'26` col 75 in Procurement is an earlier
+output that did *not* reconcile — ignore it.)
+
 ## Open items to confirm with the business
 
-- **Expedite per-month divisor.** The baseline window (Aug 1 2024 – Aug 30 2025)
-  spans 13 calendar months, but `EXPEDITE_MONTHS_IN_WINDOW` / the engine divide the
-  annual expedite count by **12**. Confirm 12 is intended (annualized) vs 13.
 - **LTL / LW baseline windows.** Confirm the exact bid-analysis date range so those
-  two baselines are rebuilt from the right period (the expedite window is a
-  placeholder default).
+  two baselines are rebuilt from the right period (these are bid-event baselines and
+  can use a different window than expedite — set the `*_BASELINE_START/END` in
+  `build_baselines.py`).
 - **STO and Payload savings** remain manual entries in the Closing Tracker.

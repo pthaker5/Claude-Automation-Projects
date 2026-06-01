@@ -59,10 +59,12 @@ import sys
 import getpass
 import shutil
 import math
-import pyodbc
 import pandas as pd
 import openpyxl
 from datetime import datetime
+
+# pyodbc is imported lazily inside get_connection() so the savings/calculation
+# functions can be imported and unit-tested on machines without an ODBC driver.
 
 
 # ===========================================================================
@@ -111,6 +113,7 @@ DATABASE = "CLXDW"
 DRIVER   = "ODBC Driver 18 for SQL Server"
 
 def get_connection(uid, pwd):
+    import pyodbc
     conn_str = (
         f"DRIVER={{{DRIVER}}};"
         f"SERVER={SERVER};"
@@ -213,15 +216,28 @@ def load_bu_lookup(filepath):
     return dict(zip(df[loc_col], df[bu_col]))
 
 
-def load_expedite_baseline(filepath):
+# Number of months represented by the expedite baseline window. The original
+# Aug'24-Aug'25 pull actually spans 13 calendar months, so dividing the annual
+# expedite count by 13 (not 12) correctly normalizes it to a per-month rate.
+# build_baselines.py auto-detects this from the data and writes a
+# "baseline_avg_per_month" column; this constant is only the fallback when an
+# older baseline file without that column is loaded.
+EXPEDITE_MONTHS_IN_WINDOW = 13
+
+def load_expedite_baseline(filepath, months_in_window=EXPEDITE_MONTHS_IN_WINDOW):
     """
     Baseline Table Expedite Count: per-lane baseline counts and cost % increase.
     Returns DataFrame: BU, Lane, baseline_exp_count, baseline_avg_per_month,
                        baseline_avg_normal_cost, cost_pct_increase
     Lane format: BU_OriginCity.OrState (e.g. MPY_Pasadena.TX)
+
+    baseline_avg_per_month is taken from the file if build_baselines.py wrote it
+    (so the window-normalization lives in one place); otherwise it is computed
+    as CEILING(expedite count / months_in_window).
     """
     df = pd.read_excel(filepath, sheet_name="Baseline Table Expedite Count", engine="openpyxl")
     df.columns = df.columns.str.strip()
+    has_precomputed = "baseline_avg_per_month" in df.columns
     df = df.rename(columns={
         "BU": "BU",
         "Lane": "Lane",
@@ -229,11 +245,17 @@ def load_expedite_baseline(filepath):
         "Normal Cost": "baseline_avg_normal_cost",
         "Cost Increase": "cost_pct_increase",
     })
-    df = df[["BU", "Lane", "baseline_exp_count", "baseline_avg_normal_cost", "cost_pct_increase"]].dropna(subset=["Lane"])
+    keep = ["BU", "Lane", "baseline_exp_count", "baseline_avg_normal_cost", "cost_pct_increase"]
+    if has_precomputed:
+        keep.append("baseline_avg_per_month")
+    df = df[keep].dropna(subset=["Lane"])
     df["BU"] = df["BU"].apply(normalize_bu)
-    df["baseline_avg_per_month"] = df["baseline_exp_count"].apply(
-        lambda x: math.ceil(x / 12) if pd.notna(x) else 0
-    )
+    if has_precomputed:
+        df["baseline_avg_per_month"] = pd.to_numeric(df["baseline_avg_per_month"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["baseline_avg_per_month"] = df["baseline_exp_count"].apply(
+            lambda x: math.ceil(x / months_in_window) if pd.notna(x) else 0
+        )
     return df
 
 

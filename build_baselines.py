@@ -53,12 +53,13 @@ import openpyxl
 # ===========================================================================
 
 # --- Baseline windows (bid-event periods). Override per baseline as needed. ---
-# Expedite baseline period (the locked 12-month-of-record window):
+# Expedite baseline period (the locked window of record):
 EXPEDITE_BASELINE_START = "2024-08-01"
 EXPEDITE_BASELINE_END   = "2025-08-31"
-# Expedite "per month" divisor. The window above is the period used to derive
-# a typical monthly expedite count. Set to the number of months represented.
-EXPEDITE_MONTHS_IN_WINDOW = 12
+# Expedite "per month" divisor. By default the number of months is AUTO-DETECTED
+# from the distinct year-months present in the data (so an Aug'24-Aug'25 pull
+# divides by 13, not 12). Set an integer here to force a fixed divisor instead.
+EXPEDITE_MONTHS_IN_WINDOW = None  # None = auto-detect from Pick Up Date
 
 # LTL RFP + Light-Weight baselines are locked at their respective bid events.
 # Point these at the raw query export covering THAT bid analysis window.
@@ -204,6 +205,10 @@ def build_expedite_baseline(raw, months_in_window=EXPEDITE_MONTHS_IN_WINDOW,
         BU, Origin City, Or State, Lane, Total SID, Normal SID, Normal Cost,
         Expedite Count, Expedite Cost, Baseline %, Cost Increase
 
+    months_in_window: divisor turning the window's total expedite count into a
+    per-month rate. None -> auto-detect from the distinct year-months present in
+    the data (Aug'24-Aug'25 -> 13). Pass an int to force a fixed divisor.
+
     scope_lanes: optional iterable of UPPER-CASE lane keys. The expedite project
     tracks a fixed, curated set of in-scope lanes (155 in the original manual
     table — 29 with expedites + 126 kept at zero). When provided, the output is
@@ -217,6 +222,16 @@ def build_expedite_baseline(raw, months_in_window=EXPEDITE_MONTHS_IN_WINDOW,
     df["_cost"] = _num(df["Normalized Ship't Actual Cost"])
     df["_exp"]  = _is_expedite(df["Priority"])
     df["_lane"] = _norm_lane_from_components(df)
+
+    # Auto-detect the number of months represented (distinct year-months)
+    if months_in_window is None:
+        if "Pick Up Date" in df.columns:
+            dts = pd.to_datetime(df["Pick Up Date"], errors="coerce").dropna()
+            months_in_window = dts.dt.to_period("M").nunique() if len(dts) else 12
+        else:
+            months_in_window = 12
+        print(f"  [expedite] months in window auto-detected = {months_in_window}")
+    months_in_window = max(int(months_in_window), 1)
 
     # Parcel never counts toward expedite or normal averages (matches manual pivot)
     df = df[~df["_tm"].str.contains("PARCEL", na=False)]
