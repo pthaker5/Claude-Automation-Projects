@@ -812,7 +812,11 @@ def calc_lw_savings(df_712, df_lw_baseline, in_scope_lanes):
     m["BU"] = m["Lane"].apply(
         lambda x: BU_NORM_UPPER.get(str(x).split("_")[0].strip().upper(), str(x).split("_")[0].strip())
     )
-    return m.groupby("BU")["savings"].sum().to_dict()
+    # 'Month Savings' is NEGATIVE when lightweight TL dropped vs baseline (loads
+    # moved to LTL) = savings. Report abs(net) when a BU nets negative, else 0 --
+    # same sign convention as Expedite and TL.
+    bu_net = m.groupby("BU")["savings"].sum()
+    return {bu: (abs(v) if pd.notna(v) and v < 0 else 0.0) for bu, v in bu_net.items()}
 
 
 # ---------------------------------------------------------------------------
