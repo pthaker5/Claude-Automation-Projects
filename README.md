@@ -143,11 +143,18 @@ Outbound    otherwise
 
 This matters because raw `Movement Type` mis-splits plant→plant moves into
 Outbound, inflating TL Outbound savings (engine MPY OB/IP 160/135 vs manual
-78/211; $9.5k vs $6.9k). **Set `INTERPLANT_LOOKUP_FILE`** to your `Interplant Loc`
-workbook (col B = origin interplant location names, col H = destination interplant
-location names) to enable it. If left `None`, the engine falls back to raw
-`Movement Type` and prints a warning. Verified: on the close data the derivation
-reproduces the manual `Updated Movement Type` exactly.
+78/211; $9.5k vs $6.9k). `INTERPLANT_LOOKUP_FILE` points at the
+`Akzo Interplant Locations` workbook; the loader reads **Sheet1 col B** (origin
+interplant location names) and **col H** (destination interplant location names).
+Verified on the close data: matched moves resolve to real Akzo facilities
+(`International Paint LLC`, `(C16D) Santa Fe Springs DC`, `(C07D) Slidell
+Distribution`, …). If `INTERPLANT_LOOKUP_FILE` is missing, the engine falls back
+to raw `Movement Type` and prints a warning.
+
+Note: the interplant location list is a bid-event reference and has been updated
+since the April close (col H now includes more distribution centers), so the
+engine's interplant split reflects the current rule and may differ slightly from
+the April manual figure.
 
 ## Open items to confirm with the business
 

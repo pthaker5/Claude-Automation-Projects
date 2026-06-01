@@ -98,8 +98,8 @@ EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE
 # location NAMES. A move is Interplant when Origin Name is in col B AND Destination
 # Name is in col H. Point this at your 'Interplant Loc' workbook. If left as None
 # (or missing), the engine falls back to the raw Movement Type column.
-INTERPLANT_LOOKUP_FILE = None  # e.g. r"H:\...\Lookups for BU and Interplant\Interplant Loc.xlsx"
-INTERPLANT_SHEET       = "Interplant Loc"
+INTERPLANT_LOOKUP_FILE = "H:\\Integrated Logistics Design\\Akzo Performance Coatings\\Poojan Transition\\Lookups for BU and Interplant\\Akzo Interplant Locations.xlsx"
+INTERPLANT_SHEET       = "Sheet1"
 
 # In-scope LTL bid lanes = baseline lanes with MORE THAN 25 baseline shipments
 # (BASELINE SID > 25). Per business decision: thin lanes (<=25 baseline shipments)
