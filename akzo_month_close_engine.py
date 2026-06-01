@@ -4,7 +4,9 @@ Akzo Nobel Month Close Savings Automation Engine
 FULLY AUTOMATED - no manual Excel steps required.
 
 What you do each month:
-    1. Update the CONFIG section (6 lines: dates, month label, folder)
+    1. Set ONE line in CONFIG:  CLOSE_MONTH = "2026-05"
+       (dates, labels, the new output folder e.g. 2026-05, and the previous
+        month's template files are all derived automatically)
     2. Run: python3 akzo_month_close_engine.py
     3. Enter SQL credentials and EUR/USD rate when prompted
 
@@ -59,6 +61,8 @@ import sys
 import getpass
 import shutil
 import math
+import glob
+import calendar
 import pandas as pd
 import openpyxl
 from datetime import datetime
@@ -71,21 +75,43 @@ from datetime import datetime
 # CONFIG - UPDATE EACH MONTH
 # ===========================================================================
 
-CURRENT_MONTH_START = "2026-04-01"
-CURRENT_MONTH_END   = "2026-04-30"
-MONTH_LABEL         = "Apr'26"
-MONTH_LONG          = "Apr_2026"
-MONTH_FOLDER        = "2026-04"
+# >>> The ONLY line to change each month: the month being closed (YYYY-MM). <<<
+# The engine derives the dates, labels, output folder (e.g. 2026-05) and the
+# previous-month template files automatically, and creates the new folder.
+CLOSE_MONTH = "2026-05"
 
-BASE_PATH         = r"H:\Integrated Logistics Design\Akzo Performance Coatings\Poojan Transition"
-CLOSING_PATH      = os.path.join(BASE_PATH, "Akzo Month End Closing")
-PREV_MONTH_FOLDER = os.path.join(CLOSING_PATH, "2026-03")
-NEW_MONTH_FOLDER  = os.path.join(CLOSING_PATH, MONTH_FOLDER)
+BASE_PATH    = r"H:\Integrated Logistics Design\Akzo Performance Coatings\Poojan Transition"
+CLOSING_PATH = os.path.join(BASE_PATH, "Akzo Month End Closing")
 
-# Previous month template files (copied as base for new month)
-SRC_OPS     = os.path.join(PREV_MONTH_FOLDER, "Akzo ANT Project Summary thru Mar  2026 v12 REPORT for OPS Update.xlsx")
-SRC_PROC    = os.path.join(PREV_MONTH_FOLDER, "Akzo ANT Project Summary thru Mar  2026 v12 REPORT for PROCUREMENT Update.xlsx")
-SRC_TRACKER = os.path.join(PREV_MONTH_FOLDER, "Month Closing Tracker - Mar 2026.xlsx")
+
+def _latest_template(folder, pattern):
+    """Newest file in `folder` matching `pattern` (ignores Excel ~$ lock files).
+    Returns folder/pattern (a non-existent path) if none found so pre-run
+    validation reports it clearly."""
+    hits = [f for f in glob.glob(os.path.join(folder, pattern))
+            if not os.path.basename(f).startswith("~$")]
+    return max(hits, key=os.path.getmtime) if hits else os.path.join(folder, pattern)
+
+
+# --- Everything below is derived from CLOSE_MONTH; no need to edit ---
+_yr, _mo = int(CLOSE_MONTH[:4]), int(CLOSE_MONTH[5:7])
+_first   = datetime(_yr, _mo, 1)
+_lastday = calendar.monthrange(_yr, _mo)[1]
+CURRENT_MONTH_START = f"{CLOSE_MONTH}-01"
+CURRENT_MONTH_END   = f"{CLOSE_MONTH}-{_lastday:02d}"
+MONTH_LABEL = _first.strftime("%b'%y")   # e.g. May'26  (written into tracker headers)
+MONTH_LONG  = _first.strftime("%b_%Y")   # e.g. May_2026 (used in output filenames)
+MONTH_FOLDER = CLOSE_MONTH               # e.g. 2026-05
+NEW_MONTH_FOLDER = os.path.join(CLOSING_PATH, MONTH_FOLDER)
+
+# Previous month folder = template source for the new month
+_pyr, _pmo = (_yr - 1, 12) if _mo == 1 else (_yr, _mo - 1)
+PREV_MONTH_FOLDER = os.path.join(CLOSING_PATH, f"{_pyr}-{_pmo:02d}")
+
+# Previous month's output workbooks (latest if several timestamped copies exist)
+SRC_OPS     = _latest_template(PREV_MONTH_FOLDER, "*REPORT for OPS Update*.xlsx")
+SRC_PROC    = _latest_template(PREV_MONTH_FOLDER, "*REPORT for PROCUREMENT Update*.xlsx")
+SRC_TRACKER = _latest_template(PREV_MONTH_FOLDER, "Month Closing Tracker*.xlsx")
 
 # === REFERENCE FILES - update only at bid events ===
 REF_BASE_PATH   = BASE_PATH  # update path if reference files live elsewhere

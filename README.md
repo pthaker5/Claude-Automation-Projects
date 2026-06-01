@@ -68,8 +68,14 @@ python build_baselines.py --source excel --validate
 python build_baselines.py --no-write
 ```
 
-Then run the monthly close (update its 6-line CONFIG first):
+Then run the monthly close. Each month you change **one line** in CONFIG — the
+month being closed — and the engine derives the dates, labels, the new output
+folder (e.g. `2026-05`, created automatically) and the previous month's template
+files, then writes the three trackers there (timestamped, never overwriting):
 
+```python
+CLOSE_MONTH = "2026-05"   # the only line to change each month
+```
 ```bash
 python akzo_month_close_engine.py
 ```
