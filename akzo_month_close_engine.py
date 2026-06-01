@@ -218,13 +218,11 @@ def load_bu_lookup(filepath):
     return dict(zip(df[loc_col], df[bu_col]))
 
 
-# Number of months represented by the expedite baseline window. The original
-# Aug'24-Aug'25 pull actually spans 13 calendar months, so dividing the annual
-# expedite count by 13 (not 12) correctly normalizes it to a per-month rate.
-# build_baselines.py auto-detects this from the data and writes a
-# "baseline_avg_per_month" column; this constant is only the fallback when an
-# older baseline file without that column is loaded.
-EXPEDITE_MONTHS_IN_WINDOW = 13
+# Divisor turning the baseline window's total expedite count into a per-month
+# rate. Set to 12 to match the established methodology (per business decision).
+# build_baselines.py writes a precomputed "baseline_avg_per_month" using the same
+# divisor; this constant is the fallback when an older baseline file lacks it.
+EXPEDITE_MONTHS_IN_WINDOW = 12
 
 def load_expedite_baseline(filepath, months_in_window=EXPEDITE_MONTHS_IN_WINDOW):
     """

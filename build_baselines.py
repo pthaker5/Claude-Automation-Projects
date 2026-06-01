@@ -56,10 +56,10 @@ import openpyxl
 # Expedite baseline period (the locked window of record):
 EXPEDITE_BASELINE_START = "2024-08-01"
 EXPEDITE_BASELINE_END   = "2025-08-31"
-# Expedite "per month" divisor. By default the number of months is AUTO-DETECTED
-# from the distinct year-months present in the data (so an Aug'24-Aug'25 pull
-# divides by 13, not 12). Set an integer here to force a fixed divisor instead.
-EXPEDITE_MONTHS_IN_WINDOW = None  # None = auto-detect from Pick Up Date
+# Expedite "per month" divisor. Fixed at 12 to match the established methodology
+# (per business decision). Set to None to auto-detect from the distinct
+# year-months present in the data instead.
+EXPEDITE_MONTHS_IN_WINDOW = 12
 
 # LTL RFP + Light-Weight baselines are locked at their respective bid events.
 # Point these at the raw query export covering THAT bid analysis window.
