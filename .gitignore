@@ -1,0 +1,15 @@
+# Large / sensitive Excel data — kept out of git, lives on OneDrive / H: drive.
+# The code is version-controlled; the data is dropped in locally per the README.
+sample_data/*.xlsx
+reference_baselines/*.xlsx
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Credentials
+*.env
+.env
