@@ -917,6 +917,22 @@ def main():
     conn.close()
     print(f"  {len(df_712):,} rows loaded")
 
+    # --- Collapse to one row per SID (match the manual one-per-SID extract) ---
+    # The TMSCL712 billing table can return multiple charge/leg rows per SID
+    # (common for LTL); each row repeats the SID-level Normalized values, so
+    # summing them multiplies a shipment's cost/weight by its line count. This is
+    # why LTL came in ~2.8x high while Lightweight (single-line TL) reconciled to
+    # the penny. The safety check below warns if duplicate rows of a SID ever
+    # carry DIFFERING normalized cost (which would mean we must sum, not keep one).
+    if "SID" in df_712.columns and df_712["SID"].duplicated().any():
+        n_rows, n_sids = len(df_712), df_712["SID"].nunique()
+        cost_col = "Normalized Ship't Actual Cost"
+        varying = int((df_712.groupby("SID")[cost_col].nunique() > 1).sum()) if cost_col in df_712.columns else 0
+        warn = f"  WARNING: {varying} SIDs have differing {cost_col} across rows (keep-first may undercount)" if varying else ""
+        print(f"  Duplicate SID rows: {n_rows:,} rows -> {n_sids:,} unique SIDs{warn}")
+        df_712 = df_712.drop_duplicates(subset=["SID"], keep="first").reset_index(drop=True)
+        print(f"  Collapsed to one row per SID: {len(df_712):,} rows")
+
     # Assign BU using lookup: try Origin Loc Code first, fall back to Dest Loc Code
     bu_map = load_bu_lookup(BU_LOOKUP_FILE)
     def assign_bu(row):
