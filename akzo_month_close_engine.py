@@ -590,8 +590,8 @@ def dump_tl_detail(df_712, csv_path, bid_rate_map=None):
         return "kept"
     df["status"] = df.apply(status, axis=1)
 
-    cols = ["SID", "BU", "bu_mapped", "direction", "Origin City", "Or State",
-            "Destination City", "Dest State", "Carrier Name", "lh", "base_used",
+    cols = ["SID", "BU", "bu_mapped", "direction", "Origin Name", "Origin City", "Or State",
+            "Destination Name", "Destination City", "Dest State", "Carrier Name", "lh", "base_used",
             "fuel", "tl_savings_raw", "status"]
     cols = [c for c in cols if c in df.columns]
     df[cols].to_csv(csv_path, index=False)
