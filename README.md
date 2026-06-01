@@ -114,22 +114,20 @@ Closing `April 2026 Summary` and Procurement `Summary ANT Tracker 24` column
 **134,200.54**. (Note: the separate `Apr'26` col 75 in Procurement is an earlier
 output that did *not* reconcile — ignore it.)
 
-## LTL in-scope lane cutoff (fixed)
+## LTL in-scope lane rule
 
-The manual close looks up LTL baseline CPP with a fixed range:
-```
-=VLOOKUP([@[LTL Bid ID]], 'LTL Baseline File'!$A$2:$D$1104, 4, FALSE)
-```
-i.e. only the **first 1,103 lanes** (the sheet is sorted by spend; these are the
-in-scope RFP lanes). Lanes below row 1104 are long-tail / not bid and return
-`#N/A` in the manual. The engine previously read the **entire 8,677-lane sheet**,
-crediting that tail — small, high-CPP lanes — which over-counted LTL ~2.8×.
+LTL savings are credited only on in-scope lanes: **baseline lanes with more than
+25 baseline shipments** (`BASELINE SID > 25`), set by `LTL_BASELINE_MIN_SHIPMENTS
+= 25`. Thin lanes (≤25 baseline shipments) have statistically unreliable CPP that
+inflates savings, so they are excluded. Reading the full 8,677-lane sheet without
+this filter over-counts LTL ~2.8× (it credits the long tail of small, high-CPP
+lanes).
 
-`load_ltl_lane_baselines` now applies the same cutoff via
-`LTL_BASELINE_INSCOPE_ROWS = 1103`. Verified against the close: rows 2–1104
-reproduce the manual matched set **exactly** (1,088 = 1,088, zero discrepancies).
-**If a new LTL bid changes the baseline file, update this row count to match the
-manual's VLOOKUP range.**
+Note: the manual close used a spend-sorted row cutoff
+(`'LTL Baseline File'!$A$2:$D$1104`, the top 1,103 lanes by spend) as a proxy;
+`>25 shipments` is the intended business rule and is what the engine applies, so
+the engine's LTL total may differ slightly from a given month's manual figure
+where the two rules disagree on borderline lanes.
 
 ## Open items to confirm with the business
 

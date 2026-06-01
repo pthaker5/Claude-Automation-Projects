@@ -92,14 +92,13 @@ REF_BASE_PATH   = BASE_PATH  # update path if reference files live elsewhere
 REFERENCE_712     = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\Mar 712 For Month Close.xlsx"
 EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE REDUCTION Aug 2024 - Aug 2025 BASELINE.xlsx"
 
-# In-scope LTL bid lanes = the first N data rows of the 'LTL Baseline File' sheet
-# (sorted by spend). The manual close looks up only this range -- its formula is
-#   =VLOOKUP([@[LTL Bid ID]], 'LTL Baseline File'!$A$2:$D$1104, 4, FALSE)
-# i.e. rows 2..1104 = 1103 lanes. Lanes below this cutoff are long-tail / not in
-# the RFP and are intentionally excluded (they return #N/A in the manual). The
-# engine must apply the SAME cutoff, or it over-counts LTL ~2.8x by crediting the
-# tail of small, high-CPP lanes. Set to None to use the entire sheet.
-LTL_BASELINE_INSCOPE_ROWS = 1103
+# In-scope LTL bid lanes = baseline lanes with MORE THAN 25 baseline shipments
+# (BASELINE SID > 25). Per business decision: thin lanes (<=25 baseline shipments)
+# are excluded -- their CPP is statistically unreliable and inflates savings.
+# (The manual close used a spend-sorted row cutoff, $A$2:$D$1104, which is a close
+# but not identical proxy for this rule; >25 shipments is the intended rule.)
+# Set to None to use every lane in the sheet.
+LTL_BASELINE_MIN_SHIPMENTS = 25
 BU_LOOKUP_FILE    = "H:\\Integrated Logistics Design\\Akzo Performance Coatings\\Poojan Transition\\Lookups for BU and Interplant\\Akzo Origins \u2013 BU (09.04.2025).xlsx"
 
 # Optional: TL bid routing guide (use ONLY when a new bid is not yet loaded in TMS).
@@ -305,33 +304,34 @@ def load_lw_baseline(filepath_ref_712):
     return df
 
 
-def load_ltl_lane_baselines(filepath_ref_712, inscope_rows=LTL_BASELINE_INSCOPE_ROWS):
+def load_ltl_lane_baselines(filepath_ref_712, min_shipments=LTL_BASELINE_MIN_SHIPMENTS):
     """
     Load LTL Baseline CPP from the LTL Baseline File sheet (pivot output).
     Key format: BU_OriginZip.Country_DestZip.Country (e.g. MPY_90670.USA_92113.USA)
     Returns dict: uppercase_key -> baseline_cpp
     Normalized to uppercase so DB-built keys can match case-insensitively.
 
-    inscope_rows limits to the first N data rows -- the in-scope bid lanes the
-    manual VLOOKUP references ($A$2:$D$1104 -> 1103 lanes). This MUST match the
-    manual range or LTL over-counts by crediting out-of-scope tail lanes. Verified
-    against the close: rows 2..1104 reproduces the manual matched set exactly.
-    Pass None to use the whole sheet.
+    Only in-scope lanes are kept: those with BASELINE SID > min_shipments. Thin
+    lanes have unreliable CPP and inflate savings, so they are excluded (per
+    business rule). Pass None to use every lane.
     """
     df = pd.read_excel(filepath_ref_712, sheet_name="LTL Baseline File", engine="openpyxl")
     df.columns = df.columns.str.strip()
-    if inscope_rows is not None:
-        df = df.iloc[:inscope_rows]  # positional cutoff, matching the VLOOKUP range
-    df = df.rename(columns={df.columns[0]: "ltl_bid_id", "BASELINE CPP": "baseline_cpp"})
+    df = df.rename(columns={df.columns[0]: "ltl_bid_id", "BASELINE CPP": "baseline_cpp",
+                            "BASELINE SID": "baseline_sid"})
     df["baseline_cpp"] = pd.to_numeric(df["baseline_cpp"], errors="coerce")
-    df = df[["ltl_bid_id", "baseline_cpp"]].dropna(subset=["ltl_bid_id", "baseline_cpp"])
+    df["baseline_sid"] = pd.to_numeric(df.get("baseline_sid"), errors="coerce")
+    df = df.dropna(subset=["ltl_bid_id", "baseline_cpp"])
     df = df[df["ltl_bid_id"].astype(str).str.strip() != "Grand Total"]
+    total = len(df)
+    if min_shipments is not None:
+        df = df[df["baseline_sid"] > min_shipments]
     result = {}
     for _, row in df.iterrows():
         key = str(row["ltl_bid_id"]).strip().upper()
         result[key] = float(row["baseline_cpp"])
-    scope = f"first {inscope_rows} in-scope rows" if inscope_rows is not None else "entire sheet"
-    print(f"  LTL lane baselines: {len(result)} lanes loaded ({scope})")
+    scope = (f"BASELINE SID > {min_shipments}" if min_shipments is not None else "all lanes")
+    print(f"  LTL lane baselines: {len(result)} of {total} lanes loaded ({scope})")
     return result
 
 
@@ -459,6 +459,82 @@ def calc_tl_bid_savings(df_712, bid_rate_map=None):
                 results[(bu, direction)] = sav
         results[("ICO", direction)] = metal_sav + wood_sav
     return results
+
+
+def dump_tl_detail(df_712, csv_path, bid_rate_map=None):
+    """Write a small per-shipment TL diagnostic CSV mirroring calc_tl_bid_savings.
+
+    One row per TRUCKLOAD shipment, with the per-row savings and a 'status'
+    showing whether it was kept or why it was excluded (so a TL gap can be
+    pinpointed by diffing against the manual TL RFP tab). Also prints the
+    per-BU x direction summary the savings are built from.
+    """
+    df = df_712.copy()
+    if "Transport Mode" in df.columns:
+        df = df[df["Transport Mode"].astype(str).str.upper() == "TRUCKLOAD"].copy()
+    if df.empty:
+        print("  TL detail: no truckload rows")
+        return
+
+    df["lh"]   = pd.to_numeric(df["Normalized Adj LineHaul"], errors="coerce")
+    df["base"] = pd.to_numeric(df["Normalized Base Charges"], errors="coerce")
+    df["fuel"] = pd.to_numeric(df["Normalized Fuel Charges"], errors="coerce")
+
+    def map_direction(mt):
+        mt = str(mt).strip().lower()
+        if "interplant" in mt: return "IP"
+        elif "inbound" in mt:  return "IB"
+        else:                  return "OB"
+
+    def map_bu(bu):
+        bu = normalize_bu(str(bu))
+        return {"MPY": "MPY", "Metal": "Metal", "Wood": "Wood",
+                "VR/ Specialty": "ASC", "Powder": "Powder"}.get(bu)
+
+    df["direction"] = df["Updated Movement Type"].apply(map_direction)
+    df["bu_mapped"] = df["BU"].apply(map_bu)
+
+    if bid_rate_map:
+        def lookup(row):
+            key = (str(row.get("BU","") or "").upper().strip(),
+                   str(row.get("Origin City","") or "").upper().strip(),
+                   str(row.get("Or State","") or "").upper().strip(),
+                   str(row.get("Destination City","") or "").upper().strip(),
+                   str(row.get("Dest State","") or "").upper().strip(),
+                   str(row.get("Carrier Name","") or "").upper().strip())
+            return bid_rate_map.get(key)
+        df["base_used"] = df.apply(lookup, axis=1)
+    else:
+        df["base_used"] = df["base"]
+    df["tl_savings_raw"] = df["lh"] - df["base_used"]
+
+    def status(r):
+        if r["direction"] == "IB":                              return "excluded_inbound"
+        if r["bu_mapped"] is None:                              return "excluded_bu_unmapped"
+        if pd.isna(r["base_used"]) or r["base_used"] == 0:      return "excluded_zero_base"
+        if pd.isna(r["lh"]) or r["lh"] == 0:                    return "excluded_zero_linehaul"
+        if r["tl_savings_raw"] > 0 and (r["fuel"] or 0) == 0:   return "excluded_all_inclusive"
+        return "kept"
+    df["status"] = df.apply(status, axis=1)
+
+    cols = ["SID", "BU", "bu_mapped", "direction", "Origin City", "Or State",
+            "Destination City", "Dest State", "Carrier Name", "lh", "base_used",
+            "fuel", "tl_savings_raw", "status"]
+    cols = [c for c in cols if c in df.columns]
+    df[cols].to_csv(csv_path, index=False)
+
+    kept = df[df["status"] == "kept"]
+    print(f"  [OK] TL detail CSV: {os.path.basename(csv_path)} "
+          f"({len(df):,} TL rows, {len(kept):,} kept)")
+    print(f"  TL kept summary (sum of savings_raw; negative = savings):")
+    print(f"    {'BU':<8}{'dir':<5}{'count':>7}{'sum_raw':>14}{'savings':>14}")
+    for direction in ["OB", "IP"]:
+        for bu in ["MPY", "ASC", "Powder", "Metal", "Wood"]:
+            g = kept[(kept["direction"] == direction) & (kept["bu_mapped"] == bu)]
+            if len(g) == 0:
+                continue
+            s = g["tl_savings_raw"].sum()
+            print(f"    {bu:<8}{direction:<5}{len(g):>7}{s:>14,.2f}{(abs(s) if s<0 else 0):>14,.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -1014,6 +1090,12 @@ def main():
     else:
         tl_savings = tl_savings_tms
         tl_total = tl_total_tms
+
+    # Diagnostic: per-shipment TL detail CSV (small) to reconcile TL vs the manual close
+    try:
+        dump_tl_detail(df_712, os.path.join(NEW_MONTH_FOLDER, f"TL_detail_{MONTH_FOLDER}.csv"), bid_rate_map)
+    except Exception as e:
+        print(f"  (TL detail dump skipped: {e})")
 
     exp_savings = calc_expedite_savings(df_712, df_exp_baseline)
     print(f"  Expedite: MPY=${exp_savings.get('MPY',0):,.0f}  "
