@@ -178,8 +178,6 @@ QUERY_712 = """
 SELECT
     SID,
     [Order Number],
-    [OBU],
-    [DBU],
     [Origin Loc Code],
     [Origin Name],
     [Origin City],
@@ -1149,14 +1147,8 @@ def main():
     # Assign BU using lookup: try Origin Loc Code first, fall back to Dest Loc Code
     bu_map = load_bu_lookup(BU_LOOKUP_FILE)
     def assign_bu(row):
-        # Match the close's formula: BU = IFERROR(OBU, DBU). Fall back to the BU
-        # lookup (Origin then Dest loc code) only if OBU/DBU aren't available.
-        obu = row.get("OBU")
-        if obu is not None and str(obu).strip() and str(obu).strip().lower() != "nan":
-            return obu
-        dbu = row.get("DBU")
-        if dbu is not None and str(dbu).strip() and str(dbu).strip().lower() != "nan":
-            return dbu
+        # OBU/DBU don't exist in the raw DB table (they're added in Excel), so BU
+        # is assigned from the BU lookup: Origin Loc Code first, then Dest Loc Code.
         origin_bu = bu_map.get(str(row.get("Origin Loc Code", "") or "").strip())
         if origin_bu:
             return origin_bu
