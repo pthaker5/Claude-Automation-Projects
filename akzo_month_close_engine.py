@@ -746,13 +746,18 @@ def calc_lw_savings(df_712, df_lw_baseline, in_scope_lanes):
         savings = pct_change x total_count x cost_delta (only if both > 0)
         Sum by BU.
     """
+    # Replicates the manual 'Light Weight TL to LTL' worksheet formula:
+    #   Truckload <15000 %   = <15k TL count / overall TL count
+    #   CHANGE from Baseline = current_lt% - baseline_lt%        (Table9 col 5)
+    #   Cost Delta           = OVERALL Truckload avg cost - LTL avg cost  (per lane)
+    #   Shipments Saved      = ROUNDDOWN(CHANGE% * overall TL count, 0)
+    #   Savings              = Shipments Saved * Cost Delta
+    # summed by BU over the in-scope lanes (no positive-only filter; lanes net).
     df = df_712.copy()
-    if "Transport Mode" in df.columns:
-        df = df[df["Transport Mode"].str.upper() == "TRUCKLOAD"]
-
-    df["cost"] = pd.to_numeric(df.get("Normalized Ship't Actual Cost"), errors="coerce")
-    df["weight"] = pd.to_numeric(df.get("Normalized Weight"), errors="coerce")
+    df["cost"]    = pd.to_numeric(df.get("Normalized Ship't Actual Cost"), errors="coerce")
+    df["weight"]  = pd.to_numeric(df.get("Normalized Weight"), errors="coerce")
     df["BU_norm"] = df["BU"].apply(normalize_bu)
+    df["mode"]    = df["Transport Mode"].astype(str).str.upper()
 
     def bu_prefix(bu):
         return LANE_BU_PREFIX.get(bu, bu) if bu else bu
@@ -762,57 +767,41 @@ def calc_lw_savings(df_712, df_lw_baseline, in_scope_lanes):
         df["Origin City"].astype(str).str.strip() + "." +
         df["Or State"].astype(str).str.strip()
     ).str.upper()
-    df["weight_band"] = df["weight"].apply(
-        lambda w: ">15000lbs" if pd.notna(w) and w > 15000 else "<15000lbs"
-    )
 
-    # Filter to in-scope lanes (both sets already uppercase)
-    df = df[df["lane_key"].isin(in_scope_lanes)]
-    if df.empty:
+    # LTL average total cost per lane (the worksheet's 'LTL Average Total Cost' lookup)
+    ltl_avg = df[df["mode"].str.contains("LTL", na=False)].groupby("lane_key")["cost"].mean()
+
+    # Truckload per lane: overall avg cost, total count, and <15k count
+    tl = df[df["mode"] == "TRUCKLOAD"].copy()
+    tl = tl[tl["lane_key"].isin(in_scope_lanes)]
+    if tl.empty:
+        return {}
+    tl["is_light"] = ~(tl["weight"] > 15000)  # <=15k (and NaN) = light, matching the pivot bands
+    g = tl.groupby("lane_key")
+    lane = pd.DataFrame({
+        "tl_avg":   g["cost"].mean(),
+        "tl_count": g.size(),
+        "lt_count": tl[tl["is_light"]].groupby("lane_key").size(),
+    })
+    lane["lt_count"] = lane["lt_count"].fillna(0)
+    lane["current_lt_pct"] = lane.apply(
+        lambda r: r["lt_count"] / r["tl_count"] if r["tl_count"] else 0.0, axis=1)
+    lane["ltl_avg"] = ltl_avg
+    lane = lane.reset_index().rename(columns={"lane_key": "Lane"})
+
+    # baseline lt% from the LW baseline (Table9 col 5)
+    base = df_lw_baseline.rename(columns={"lt_pct_base": "baseline_lt_pct"})[["Lane", "baseline_lt_pct"]]
+    m = pd.merge(lane, base, on="Lane", how="inner")
+    m = m[m["ltl_avg"].notna()]   # lanes with no LTL cost are #N/A in the manual -> excluded
+    if m.empty:
         return {}
 
-    # Pivot: lane x weight_band -> avg cost and count
-    pivot = df.groupby(["lane_key", "weight_band"]).agg(
-        avg_cost = ("cost", "mean"),
-        count    = ("SID", "count")
-    ).reset_index()
+    m["change_pct"]      = m["current_lt_pct"] - pd.to_numeric(m["baseline_lt_pct"], errors="coerce")
+    m["shipments_saved"] = (m["change_pct"] * m["tl_count"]).apply(
+        lambda x: float(math.trunc(x)) if pd.notna(x) else 0.0)   # Excel ROUNDDOWN(.,0)
+    m["cost_delta"]      = m["tl_avg"] - m["ltl_avg"]
+    m["savings"]         = m["shipments_saved"] * m["cost_delta"]
 
-    wide = pivot.pivot(index="lane_key", columns="weight_band", values=["avg_cost", "count"])
-    wide.columns = [f"{col[0]}_{col[1]}" for col in wide.columns]
-    wide = wide.reset_index().rename(columns={"lane_key": "Lane"})
-
-    # Standardize column names
-    gt_avg   = "avg_cost_>15000lbs"
-    lt_avg   = "avg_cost_<15000lbs"
-    gt_count = "count_>15000lbs"
-    lt_count = "count_<15000lbs"
-
-    for col in [gt_avg, lt_avg, gt_count, lt_count]:
-        if col not in wide.columns:
-            wide[col] = 0.0
-
-    wide[gt_count] = pd.to_numeric(wide[gt_count], errors="coerce").fillna(0)
-    wide[lt_count] = pd.to_numeric(wide[lt_count], errors="coerce").fillna(0)
-    wide[gt_avg]   = pd.to_numeric(wide[gt_avg],   errors="coerce").fillna(0)
-    wide[lt_avg]   = pd.to_numeric(wide[lt_avg],   errors="coerce").fillna(0)
-    wide["total_count"] = wide[gt_count] + wide[lt_count]
-    wide["lt_pct"] = wide.apply(
-        lambda r: r[lt_count] / r["total_count"] if r["total_count"] > 0 else 0, axis=1
-    )
-
-    # Join with baseline
-    merged = pd.merge(wide, df_lw_baseline, on="Lane", how="inner")
-
-    def calc_lane_savings(row):
-        pct_change = row["lt_pct"] - row["lt_pct_base"]
-        cost_delta = row[gt_avg] - row[lt_avg]
-        if pct_change > 0 and cost_delta > 0:
-            return pct_change * row["total_count"] * cost_delta
-        return 0.0
-
-    merged["savings"] = merged.apply(calc_lane_savings, axis=1)
-
-    # Extract BU from lane key (prefix before first underscore; lane key is uppercase)
     BU_NORM_UPPER = {
         "MPY": "MPY", "M&PC": "MPY",
         "METAL": "Metal",
@@ -820,11 +809,10 @@ def calc_lw_savings(df_712, df_lw_baseline, in_scope_lanes):
         "POWDER": "Powder",
         "VR/ SPECIALTY": "VR/ Specialty",
     }
-    merged["BU"] = merged["Lane"].apply(
+    m["BU"] = m["Lane"].apply(
         lambda x: BU_NORM_UPPER.get(str(x).split("_")[0].strip().upper(), str(x).split("_")[0].strip())
     )
-
-    return merged.groupby("BU")["savings"].sum().to_dict()
+    return m.groupby("BU")["savings"].sum().to_dict()
 
 
 # ---------------------------------------------------------------------------
