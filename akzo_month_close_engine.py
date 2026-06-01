@@ -96,9 +96,13 @@ EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE
 # Used to derive Updated Movement Type exactly like the close (see derive logic in
 # main): col B = origin interplant location NAMES, col H = destination interplant
 # location NAMES. A move is Interplant when Origin Name is in col B AND Destination
-# Name is in col H. Point this at your 'Interplant Loc' workbook. If left as None
-# (or missing), the engine falls back to the raw Movement Type column.
-INTERPLANT_LOOKUP_FILE = "H:\\Integrated Logistics Design\\Akzo Performance Coatings\\Poojan Transition\\Lookups for BU and Interplant\\Akzo Interplant Locations.xlsx"
+# Name is in col H.
+#
+# You normally do NOT need to set a path: the engine auto-locates the file by name
+# (handles trailing-space / minor filename variations) in the folders where your
+# other lookups live. Set INTERPLANT_LOOKUP_FILE only to force a specific file.
+INTERPLANT_LOOKUP_FILE = None          # explicit override; None = auto-locate
+INTERPLANT_LOOKUP_PATTERN = "Akzo Interplant Locations*.xlsx"
 INTERPLANT_SHEET       = "Sheet1"
 
 # In-scope LTL bid lanes = baseline lanes with MORE THAN 25 baseline shipments
@@ -221,15 +225,56 @@ def normalize_bu(raw_bu):
 # REFERENCE DATA LOADERS (static - loaded once per session)
 # ===========================================================================
 
-def load_interplant_locs(filepath=INTERPLANT_LOOKUP_FILE, sheet=INTERPLANT_SHEET):
+def resolve_interplant_file():
+    """Locate the interplant-locations workbook. Uses INTERPLANT_LOOKUP_FILE if it
+    exists; otherwise searches (by INTERPLANT_LOOKUP_PATTERN, so trailing-space /
+    minor filename variants still match) the folders where the other lookups live,
+    plus the script dir, cwd, Downloads and the Adhoc desktop folder.
+    Returns a path or None.
+    """
+    import glob
+    if INTERPLANT_LOOKUP_FILE and os.path.exists(INTERPLANT_LOOKUP_FILE):
+        return INTERPLANT_LOOKUP_FILE
+    dirs = []
+    for ref in (BU_LOOKUP_FILE, REFERENCE_712, EXPEDITE_BASELINE):
+        try:
+            dirs.append(os.path.dirname(ref))
+        except Exception:
+            pass
+    try:
+        dirs.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    dirs.append(os.getcwd())
+    home = os.path.expanduser("~")
+    dirs.append(os.path.join(home, "Downloads"))
+    dirs.append(os.path.join(home, "OneDrive - Quantix", "Desktop", "Adhoc"))
+    seen = set()
+    for d in dirs:
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        try:
+            hits = sorted(glob.glob(os.path.join(d, INTERPLANT_LOOKUP_PATTERN)))
+        except Exception:
+            hits = []
+        if hits:
+            return hits[0]
+    return None
+
+
+def load_interplant_locs(filepath=None, sheet=INTERPLANT_SHEET):
     """Load the Interplant Loc lookup the manual close uses to flag interplant.
 
     Mirrors the workbook formulas:
         Interplant Origin      = VLOOKUP(Origin Name,      'Interplant Loc'!$B:$B)
         Interplant Destination = VLOOKUP(Destination Name, 'Interplant Loc'!$H:$H)
     Returns (origin_names, dest_names) as UPPER-CASE name sets, or (None, None)
-    when no lookup file is configured/available.
+    when the lookup file cannot be located. When filepath is None it is
+    auto-resolved via resolve_interplant_file().
     """
+    if filepath is None:
+        filepath = resolve_interplant_file()
     if not filepath or not os.path.exists(filepath):
         return None, None
     df = pd.read_excel(filepath, sheet_name=sheet, header=None, engine="openpyxl")
@@ -1100,8 +1145,10 @@ def main():
     #   Inbound     elif SID starts with "AK0"
     #   Outbound    otherwise
     # Raw [Movement Type] mis-splits interplant vs outbound, so we derive it.
-    io_locs, id_locs = load_interplant_locs()
+    interplant_path = resolve_interplant_file()
+    io_locs, id_locs = load_interplant_locs(interplant_path)
     if io_locs is not None:
+        print(f"  Interplant lookup: {interplant_path}")
         def derive_mt(row):
             oi = str(row.get("Origin Name", "") or "").strip().upper() in io_locs
             di = str(row.get("Destination Name", "") or "").strip().upper() in id_locs
@@ -1116,13 +1163,9 @@ def main():
     else:
         if "Updated Movement Type" not in df_712.columns:
             df_712["Updated Movement Type"] = df_712.get("Movement Type", "Outbound")
-        if INTERPLANT_LOOKUP_FILE:
-            print(f"  *** WARNING: interplant lookup NOT FOUND at:\n"
-                  f"        {INTERPLANT_LOOKUP_FILE}\n"
-                  f"      -> falling back to raw Movement Type; TL OB/IP split will be WRONG.\n"
-                  f"      Fix INTERPLANT_LOOKUP_FILE to the real path of 'Akzo Interplant Locations.xlsx'.")
-        else:
-            print("  Direction: INTERPLANT_LOOKUP_FILE not set -> using raw Movement Type")
+        print(f"  *** WARNING: could not locate '{INTERPLANT_LOOKUP_PATTERN}' in the lookup/Adhoc/\n"
+              f"      Downloads folders -> falling back to raw Movement Type; TL OB/IP split will be WRONG.\n"
+              f"      Put 'Akzo Interplant Locations.xlsx' next to this script (or set INTERPLANT_LOOKUP_FILE).")
 
     # -----------------------------------------------------------------------
     # STEP 3: Load static reference baselines
