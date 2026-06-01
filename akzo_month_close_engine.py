@@ -92,6 +92,15 @@ REF_BASE_PATH   = BASE_PATH  # update path if reference files live elsewhere
 REFERENCE_712     = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\Mar 712 For Month Close.xlsx"
 EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE REDUCTION Aug 2024 - Aug 2025 BASELINE.xlsx"
 
+# Interplant location lookup (the manual's external 'Interplant Loc' reference).
+# Used to derive Updated Movement Type exactly like the close (see derive logic in
+# main): col B = origin interplant location NAMES, col H = destination interplant
+# location NAMES. A move is Interplant when Origin Name is in col B AND Destination
+# Name is in col H. Point this at your 'Interplant Loc' workbook. If left as None
+# (or missing), the engine falls back to the raw Movement Type column.
+INTERPLANT_LOOKUP_FILE = None  # e.g. r"H:\...\Lookups for BU and Interplant\Interplant Loc.xlsx"
+INTERPLANT_SHEET       = "Interplant Loc"
+
 # In-scope LTL bid lanes = baseline lanes with MORE THAN 25 baseline shipments
 # (BASELINE SID > 25). Per business decision: thin lanes (<=25 baseline shipments)
 # are excluded -- their CPP is statistically unreliable and inflates savings.
@@ -211,6 +220,25 @@ def normalize_bu(raw_bu):
 # ===========================================================================
 # REFERENCE DATA LOADERS (static - loaded once per session)
 # ===========================================================================
+
+def load_interplant_locs(filepath=INTERPLANT_LOOKUP_FILE, sheet=INTERPLANT_SHEET):
+    """Load the Interplant Loc lookup the manual close uses to flag interplant.
+
+    Mirrors the workbook formulas:
+        Interplant Origin      = VLOOKUP(Origin Name,      'Interplant Loc'!$B:$B)
+        Interplant Destination = VLOOKUP(Destination Name, 'Interplant Loc'!$H:$H)
+    Returns (origin_names, dest_names) as UPPER-CASE name sets, or (None, None)
+    when no lookup file is configured/available.
+    """
+    if not filepath or not os.path.exists(filepath):
+        return None, None
+    df = pd.read_excel(filepath, sheet_name=sheet, header=None, engine="openpyxl")
+    def colset(idx):
+        if df.shape[1] <= idx:
+            return set()
+        return {str(v).strip().upper() for v in df.iloc[:, idx].dropna() if str(v).strip()}
+    return colset(1), colset(7)  # column B (origins), column H (destinations)
+
 
 def load_bu_lookup(filepath):
     """Maps Origin Location Code -> Business Unit."""
@@ -1066,15 +1094,30 @@ def main():
         print(f"  Removed {dropped} rows with no BU assignment")
 
     # --- Direction (Updated Movement Type) ---
-    # The DB query returns raw [Movement Type] (fully populated: Outbound /
-    # Interplant / Inbound), which the engine uses directly. NOTE: the manual
-    # close uses an interplant-aware "Updated Movement Type" that reclassifies
-    # additional plant->plant moves as Interplant; replicating it exactly needs
-    # the interplant lookup (loc code -> Akzo plant), since origin and dest use
-    # different code systems. Until that lookup is wired in, raw Movement Type is
-    # the best available signal. See README "TL direction" for the open item.
-    if "Updated Movement Type" not in df_712.columns:
-        df_712["Updated Movement Type"] = df_712.get("Movement Type", "Outbound")
+    # Replicate the manual close's formula exactly:
+    #   Interplant  if Origin Name is an interplant location (Interplant Loc col B)
+    #               AND Destination Name is one (Interplant Loc col H)
+    #   Inbound     elif SID starts with "AK0"
+    #   Outbound    otherwise
+    # Raw [Movement Type] mis-splits interplant vs outbound, so we derive it.
+    io_locs, id_locs = load_interplant_locs()
+    if io_locs is not None:
+        def derive_mt(row):
+            oi = str(row.get("Origin Name", "") or "").strip().upper() in io_locs
+            di = str(row.get("Destination Name", "") or "").strip().upper() in id_locs
+            if oi and di:
+                return "Interplant"
+            if str(row.get("SID", "") or "").strip().upper().startswith("AK0"):
+                return "Inbound"
+            return "Outbound"
+        df_712["Updated Movement Type"] = df_712.apply(derive_mt, axis=1)
+        print(f"  Direction (Interplant Loc lookup: {len(io_locs)} origin / {len(id_locs)} dest names): "
+              f"{df_712['Updated Movement Type'].value_counts().to_dict()}")
+    else:
+        if "Updated Movement Type" not in df_712.columns:
+            df_712["Updated Movement Type"] = df_712.get("Movement Type", "Outbound")
+        print("  Direction: INTERPLANT_LOOKUP_FILE not set -> using raw Movement Type "
+              "(set it to flag interplant correctly and fix TL OB/IP split)")
 
     # -----------------------------------------------------------------------
     # STEP 3: Load static reference baselines

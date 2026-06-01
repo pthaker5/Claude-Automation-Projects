@@ -129,17 +129,27 @@ Note: the manual close used a spend-sorted row cutoff
 the engine's LTL total may differ slightly from a given month's manual figure
 where the two rules disagree on borderline lanes.
 
-## Open items to confirm with the business
+## TL direction (Interplant vs Outbound)
 
-- **TL direction (Interplant vs Outbound).** The engine classifies direction from
-  the raw `Movement Type` column. The manual close uses an interplant-aware
-  `Updated Movement Type` that reclassifies extra plant→plant moves as Interplant
-  (verified: engine MPY Outbound = 160 / Interplant = 135 vs manual 78 / 211).
-  Those misclassified interplant moves inflate TL **Outbound** savings ($9.5k vs
-  $6.9k). Replicating it needs the **interplant lookup** (loc code → Akzo plant)
-  from the `Lookups for BU and Interplant` folder — origin and destination use
-  different code systems (dests are numeric), so the BU/origin lookup alone can't
-  detect interplant destinations. Provide that lookup to close the TL gap exactly.
+Direction (`Updated Movement Type`) is derived exactly like the manual close's
+formula, by **name** against the `Interplant Loc` lookup:
+
+```
+Interplant  if Origin Name      is in Interplant Loc col B
+            AND Destination Name is in Interplant Loc col H
+Inbound     elif SID starts with "AK0"
+Outbound    otherwise
+```
+
+This matters because raw `Movement Type` mis-splits plant→plant moves into
+Outbound, inflating TL Outbound savings (engine MPY OB/IP 160/135 vs manual
+78/211; $9.5k vs $6.9k). **Set `INTERPLANT_LOOKUP_FILE`** to your `Interplant Loc`
+workbook (col B = origin interplant location names, col H = destination interplant
+location names) to enable it. If left `None`, the engine falls back to raw
+`Movement Type` and prints a warning. Verified: on the close data the derivation
+reproduces the manual `Updated Movement Type` exactly.
+
+## Open items to confirm with the business
 
 - **LTL / LW baseline windows.** Confirm the exact bid-analysis date range so those
   two baselines are rebuilt from the right period (these are bid-event baselines and
