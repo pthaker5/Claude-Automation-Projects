@@ -93,9 +93,11 @@ REFERENCE_712     = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\Mar 712 
 EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE REDUCTION Aug 2024 - Aug 2025 BASELINE.xlsx"
 BU_LOOKUP_FILE    = "H:\\Integrated Logistics Design\\Akzo Performance Coatings\\Poojan Transition\\Lookups for BU and Interplant\\Akzo Origins \u2013 BU (09.04.2025).xlsx"
 
-# Optional: TL bid routing guide (use when new bid not yet in TMS)
-# Set to None to use Normalized Base Charges from TMS directly
-TL_BID_FILE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\Revised TL Routing Guide 042726.xlsx"
+# Optional: TL bid routing guide (use ONLY when a new bid is not yet loaded in TMS).
+# The new bid rates are now in TMS, so this stays None and TL savings come from
+# Normalized Adj LineHaul - Normalized Base Charges directly. If a future bid is
+# ever run before TMS is updated, point this at that routing guide temporarily.
+TL_BID_FILE = None
 
 # Output file names
 OUT_OPS_NAME     = f"Akzo ANT Project Summary thru {MONTH_LONG.replace('_', '  ')} v12 REPORT for OPS Update.xlsx"
