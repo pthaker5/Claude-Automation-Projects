@@ -1065,6 +1065,14 @@ def main():
     if dropped:
         print(f"  Removed {dropped} rows with no BU assignment")
 
+    # --- Direction (Updated Movement Type) ---
+    # The DB query returns raw [Movement Type] (fully populated: Outbound /
+    # Interplant / Inbound), which the engine uses directly. NOTE: the manual
+    # close uses an interplant-aware "Updated Movement Type" that reclassifies
+    # additional plant->plant moves as Interplant; replicating it exactly needs
+    # the interplant lookup (loc code -> Akzo plant), since origin and dest use
+    # different code systems. Until that lookup is wired in, raw Movement Type is
+    # the best available signal. See README "TL direction" for the open item.
     if "Updated Movement Type" not in df_712.columns:
         df_712["Updated Movement Type"] = df_712.get("Movement Type", "Outbound")
 

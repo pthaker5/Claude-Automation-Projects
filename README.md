@@ -131,6 +131,16 @@ where the two rules disagree on borderline lanes.
 
 ## Open items to confirm with the business
 
+- **TL direction (Interplant vs Outbound).** The engine classifies direction from
+  the raw `Movement Type` column. The manual close uses an interplant-aware
+  `Updated Movement Type` that reclassifies extra plant→plant moves as Interplant
+  (verified: engine MPY Outbound = 160 / Interplant = 135 vs manual 78 / 211).
+  Those misclassified interplant moves inflate TL **Outbound** savings ($9.5k vs
+  $6.9k). Replicating it needs the **interplant lookup** (loc code → Akzo plant)
+  from the `Lookups for BU and Interplant` folder — origin and destination use
+  different code systems (dests are numeric), so the BU/origin lookup alone can't
+  detect interplant destinations. Provide that lookup to close the TL gap exactly.
+
 - **LTL / LW baseline windows.** Confirm the exact bid-analysis date range so those
   two baselines are rebuilt from the right period (these are bid-event baselines and
   can use a different window than expedite — set the `*_BASELINE_START/END` in
