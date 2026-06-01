@@ -825,6 +825,23 @@ def calc_ltl_rfp_savings(df_712, ltl_lane_baselines):
 # OUTPUT FILE WRITING
 # ===========================================================================
 
+def unique_path(path):
+    """Return a path that does not collide with an existing file. If `path` is
+    free it is returned unchanged; otherwise a timestamp (and counter if needed)
+    is inserted before the extension so existing files are never overwritten.
+    """
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = f"{base} ({stamp}){ext}"
+    n = 2
+    while os.path.exists(candidate):
+        candidate = f"{base} ({stamp}_{n}){ext}"
+        n += 1
+    return candidate
+
+
 def find_or_insert_month_col(ws, month_label, header_row=2):
     for c in range(1, ws.max_column + 1):
         val = ws.cell(row=header_row, column=c).value
@@ -992,14 +1009,15 @@ def main():
     # -----------------------------------------------------------------------
     print("\n[1/6] Setting up output folder...")
     os.makedirs(NEW_MONTH_FOLDER, exist_ok=True)
-    out_ops     = os.path.join(NEW_MONTH_FOLDER, OUT_OPS_NAME)
-    out_proc    = os.path.join(NEW_MONTH_FOLDER, OUT_PROC_NAME)
-    out_tracker = os.path.join(NEW_MONTH_FOLDER, OUT_TRACKER_NAME)
+    # Never overwrite/replace an existing file in the folder: if a same-named
+    # output already exists, write to a new timestamped name instead.
+    out_ops     = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_OPS_NAME))
+    out_proc    = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_PROC_NAME))
+    out_tracker = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_TRACKER_NAME))
 
     for src, dst in [(SRC_OPS, out_ops), (SRC_PROC, out_proc), (SRC_TRACKER, out_tracker)]:
-        if not os.path.exists(dst):
-            shutil.copy2(src, dst)
-            print(f"  Copied: {os.path.basename(dst)}")
+        shutil.copy2(src, dst)
+        print(f"  Created: {os.path.basename(dst)}")
 
     # -----------------------------------------------------------------------
     # STEP 2: Pull current month data from DB
@@ -1093,7 +1111,7 @@ def main():
 
     # Diagnostic: per-shipment TL detail CSV (small) to reconcile TL vs the manual close
     try:
-        dump_tl_detail(df_712, os.path.join(NEW_MONTH_FOLDER, f"TL_detail_{MONTH_FOLDER}.csv"), bid_rate_map)
+        dump_tl_detail(df_712, unique_path(os.path.join(NEW_MONTH_FOLDER, f"TL_detail_{MONTH_FOLDER}.csv")), bid_rate_map)
     except Exception as e:
         print(f"  (TL detail dump skipped: {e})")
 
