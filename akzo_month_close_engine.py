@@ -1116,8 +1116,13 @@ def main():
     else:
         if "Updated Movement Type" not in df_712.columns:
             df_712["Updated Movement Type"] = df_712.get("Movement Type", "Outbound")
-        print("  Direction: INTERPLANT_LOOKUP_FILE not set -> using raw Movement Type "
-              "(set it to flag interplant correctly and fix TL OB/IP split)")
+        if INTERPLANT_LOOKUP_FILE:
+            print(f"  *** WARNING: interplant lookup NOT FOUND at:\n"
+                  f"        {INTERPLANT_LOOKUP_FILE}\n"
+                  f"      -> falling back to raw Movement Type; TL OB/IP split will be WRONG.\n"
+                  f"      Fix INTERPLANT_LOOKUP_FILE to the real path of 'Akzo Interplant Locations.xlsx'.")
+        else:
+            print("  Direction: INTERPLANT_LOOKUP_FILE not set -> using raw Movement Type")
 
     # -----------------------------------------------------------------------
     # STEP 3: Load static reference baselines
