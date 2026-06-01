@@ -1108,15 +1108,11 @@ def main():
     # -----------------------------------------------------------------------
     print("\n[1/6] Setting up output folder...")
     os.makedirs(NEW_MONTH_FOLDER, exist_ok=True)
-    # Never overwrite/replace an existing file in the folder: if a same-named
-    # output already exists, write to a new timestamped name instead.
-    out_ops     = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_OPS_NAME))
-    out_proc    = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_PROC_NAME))
-    out_tracker = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_TRACKER_NAME))
-
-    for src, dst in [(SRC_OPS, out_ops), (SRC_PROC, out_proc), (SRC_TRACKER, out_tracker)]:
-        shutil.copy2(src, dst)
-        print(f"  Created: {os.path.basename(dst)}")
+    print(f"  {NEW_MONTH_FOLDER}")
+    # NOTE: the previous-month templates are copied to the output names only at
+    # the WRITE step (after the DB pull + all computation succeed). That way a
+    # failed run leaves no empty/partial output files behind, and the next run
+    # uses the clean (non-timestamped) names.
 
     # -----------------------------------------------------------------------
     # STEP 2: Pull current month data from DB
@@ -1281,6 +1277,15 @@ def main():
     # STEP 6: Write outputs
     # -----------------------------------------------------------------------
     print("\n[5/6] Writing output files...")
+    # Copy the previous-month templates now (after everything succeeded), using
+    # clean names when free and timestamped names only if a real prior output
+    # already exists -- so a crashed run never leaves orphan/empty files.
+    out_ops     = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_OPS_NAME))
+    out_proc    = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_PROC_NAME))
+    out_tracker = unique_path(os.path.join(NEW_MONTH_FOLDER, OUT_TRACKER_NAME))
+    for src, dst in [(SRC_OPS, out_ops), (SRC_PROC, out_proc), (SRC_TRACKER, out_tracker)]:
+        shutil.copy2(src, dst)
+        print(f"  Created: {os.path.basename(dst)}")
     write_closing_tracker(out_tracker, savings_dict, MONTH_LABEL)
     write_ops_tracker(out_ops, savings_dict, MONTH_LABEL, eur_rate)
     write_procurement_tracker(out_proc, tl_savings, ltl_savings, MONTH_LABEL, eur_rate)
