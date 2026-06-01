@@ -91,6 +91,15 @@ SRC_TRACKER = os.path.join(PREV_MONTH_FOLDER, "Month Closing Tracker - Mar 2026.
 REF_BASE_PATH   = BASE_PATH  # update path if reference files live elsewhere
 REFERENCE_712     = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\Mar 712 For Month Close.xlsx"
 EXPEDITE_BASELINE = r"C:\Users\pthaker\OneDrive - Quantix\Desktop\Adhoc\EXPEDITE REDUCTION Aug 2024 - Aug 2025 BASELINE.xlsx"
+
+# In-scope LTL bid lanes = the first N data rows of the 'LTL Baseline File' sheet
+# (sorted by spend). The manual close looks up only this range -- its formula is
+#   =VLOOKUP([@[LTL Bid ID]], 'LTL Baseline File'!$A$2:$D$1104, 4, FALSE)
+# i.e. rows 2..1104 = 1103 lanes. Lanes below this cutoff are long-tail / not in
+# the RFP and are intentionally excluded (they return #N/A in the manual). The
+# engine must apply the SAME cutoff, or it over-counts LTL ~2.8x by crediting the
+# tail of small, high-CPP lanes. Set to None to use the entire sheet.
+LTL_BASELINE_INSCOPE_ROWS = 1103
 BU_LOOKUP_FILE    = "H:\\Integrated Logistics Design\\Akzo Performance Coatings\\Poojan Transition\\Lookups for BU and Interplant\\Akzo Origins \u2013 BU (09.04.2025).xlsx"
 
 # Optional: TL bid routing guide (use ONLY when a new bid is not yet loaded in TMS).
@@ -296,15 +305,23 @@ def load_lw_baseline(filepath_ref_712):
     return df
 
 
-def load_ltl_lane_baselines(filepath_ref_712):
+def load_ltl_lane_baselines(filepath_ref_712, inscope_rows=LTL_BASELINE_INSCOPE_ROWS):
     """
     Load LTL Baseline CPP from the LTL Baseline File sheet (pivot output).
     Key format: BU_OriginZip.Country_DestZip.Country (e.g. MPY_90670.USA_92113.USA)
     Returns dict: uppercase_key -> baseline_cpp
     Normalized to uppercase so DB-built keys can match case-insensitively.
+
+    inscope_rows limits to the first N data rows -- the in-scope bid lanes the
+    manual VLOOKUP references ($A$2:$D$1104 -> 1103 lanes). This MUST match the
+    manual range or LTL over-counts by crediting out-of-scope tail lanes. Verified
+    against the close: rows 2..1104 reproduces the manual matched set exactly.
+    Pass None to use the whole sheet.
     """
     df = pd.read_excel(filepath_ref_712, sheet_name="LTL Baseline File", engine="openpyxl")
     df.columns = df.columns.str.strip()
+    if inscope_rows is not None:
+        df = df.iloc[:inscope_rows]  # positional cutoff, matching the VLOOKUP range
     df = df.rename(columns={df.columns[0]: "ltl_bid_id", "BASELINE CPP": "baseline_cpp"})
     df["baseline_cpp"] = pd.to_numeric(df["baseline_cpp"], errors="coerce")
     df = df[["ltl_bid_id", "baseline_cpp"]].dropna(subset=["ltl_bid_id", "baseline_cpp"])
@@ -313,7 +330,8 @@ def load_ltl_lane_baselines(filepath_ref_712):
     for _, row in df.iterrows():
         key = str(row["ltl_bid_id"]).strip().upper()
         result[key] = float(row["baseline_cpp"])
-    print(f"  LTL lane baselines: {len(result)} lanes loaded from LTL Baseline File sheet")
+    scope = f"first {inscope_rows} in-scope rows" if inscope_rows is not None else "entire sheet"
+    print(f"  LTL lane baselines: {len(result)} lanes loaded ({scope})")
     return result
 
 

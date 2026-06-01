@@ -114,6 +114,23 @@ Closing `April 2026 Summary` and Procurement `Summary ANT Tracker 24` column
 **134,200.54**. (Note: the separate `Apr'26` col 75 in Procurement is an earlier
 output that did *not* reconcile — ignore it.)
 
+## LTL in-scope lane cutoff (fixed)
+
+The manual close looks up LTL baseline CPP with a fixed range:
+```
+=VLOOKUP([@[LTL Bid ID]], 'LTL Baseline File'!$A$2:$D$1104, 4, FALSE)
+```
+i.e. only the **first 1,103 lanes** (the sheet is sorted by spend; these are the
+in-scope RFP lanes). Lanes below row 1104 are long-tail / not bid and return
+`#N/A` in the manual. The engine previously read the **entire 8,677-lane sheet**,
+crediting that tail — small, high-CPP lanes — which over-counted LTL ~2.8×.
+
+`load_ltl_lane_baselines` now applies the same cutoff via
+`LTL_BASELINE_INSCOPE_ROWS = 1103`. Verified against the close: rows 2–1104
+reproduce the manual matched set **exactly** (1,088 = 1,088, zero discrepancies).
+**If a new LTL bid changes the baseline file, update this row count to match the
+manual's VLOOKUP range.**
+
 ## Open items to confirm with the business
 
 - **LTL / LW baseline windows.** Confirm the exact bid-analysis date range so those
