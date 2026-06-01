@@ -674,9 +674,11 @@ def calc_expedite_savings(df_712, df_exp_baseline):
     df["is_expedite"] = df["Priority"].astype(str).str.upper().str.startswith("EXP")
 
     # Aggregate per lane
-    # Exclude PARCEL from normal avg cost - pivot uses Truckload + LTL only
-    df_non_exp = df[~df["is_expedite"] & ~df["Transport Mode"].astype(str).str.upper().str.contains("PARCEL", na=False)]
-    exp = df[df["is_expedite"]].groupby("lane_key")["SID"].count().rename("exp_count")
+    # Exclude PARCEL from BOTH expedite and normal counts (the baseline pivot is
+    # Truckload + LTL only, so the current month must match that scope).
+    not_parcel = ~df["Transport Mode"].astype(str).str.upper().str.contains("PARCEL", na=False)
+    df_non_exp = df[~df["is_expedite"] & not_parcel]
+    exp = df[df["is_expedite"] & not_parcel].groupby("lane_key")["SID"].count().rename("exp_count")
     norm = df_non_exp.groupby("lane_key").agg(
         normal_count = ("SID", "count"),
         normal_avg_cost = ("cost", "mean")
@@ -704,13 +706,17 @@ def calc_expedite_savings(df_712, df_exp_baseline):
         axis=1
     )
 
+    merged["normal_count"] = pd.to_numeric(merged.get("normal_count"), errors="coerce").fillna(0)
     merged["exp_delta"] = merged["exp_count"] - merged["baseline_avg_per_month"]
-    # KEY: if lane had ZERO expedites this month, Excel DC=blank -> DG=blank -> 0
-    # Only compute cost_change for lanes with at least 1 expedite shipment
+    # Credit a lane whenever it shipped at all this month (expedite OR normal).
+    # A lane that dropped to ZERO expedites is the LARGEST reduction (exp_delta most
+    # negative) and is the whole point of "expedite reduction" -- the old guard
+    # (exp_count > 0) zeroed exactly those, badly undercounting savings. We still
+    # skip fully-inactive lanes (no shipments at all this month).
+    merged["active"] = (merged["exp_count"] > 0) | (merged["normal_count"] > 0)
     merged["cost_change"] = merged.apply(
         lambda r: r["cost_pct_increase"] * r["avg_cost"] * r["exp_delta"]
-        if pd.notna(r["cost_pct_increase"]) and pd.notna(r["avg_cost"])
-           and pd.notna(r["exp_count"]) and r["exp_count"] > 0
+        if pd.notna(r["cost_pct_increase"]) and pd.notna(r["avg_cost"]) and r["active"]
         else 0.0,
         axis=1
     )
