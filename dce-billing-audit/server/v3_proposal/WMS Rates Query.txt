@@ -1,0 +1,73 @@
+SELECT cm.customer_id AS 't_bmm_customerPK',
+       com.contract_id AS 't_bmm_contract_masterPK',
+       cit.contract_invoice_type_id AS 't_bmm_contract_invoice_typePK',
+       chrg.chargeback_id AS 't_bmm_cont_inv_type_chargebackPK',
+       ct.chargeback_type_id AS 't_bmm_chargeback_typePK',
+       cr.chargeback_rate_id AS 't_bmm_chargeback_ratePK',
+       cm.customer_name,
+       com.wh_id,
+       com.contract_code,
+       cit.contract_invoice_type_code,
+       chrg.chargeback_code,
+       chrg.description,
+       ct.chargeback_type,
+       cr.precedence,
+       CAST(cr.rate AS FLOAT) AS rate,
+       cr.per_text,
+       ISNULL(cr.order_type, '<ANY>') AS order_type,
+       ISNULL(cr.container_type, '<ANY>') AS source_vessel,
+       ISNULL(cr.dest_container_type, '<ANY>') AS target_vessel,
+       ISNULL(
+                 CASE
+                     WHEN cr.sampling_order_tier = 'TIER1' THEN
+                         cr.sampling_order_tier + ' ' + '(0-50)'
+                     WHEN cr.sampling_order_tier = 'TIER2' THEN
+                         cr.sampling_order_tier + ' ' + '(51-100)'
+                     WHEN cr.sampling_order_tier = 'TIER3' THEN
+                         cr.sampling_order_tier + ' ' + '(101-1000)'
+                     WHEN cr.sampling_order_tier = 'TIER4' THEN
+                         cr.sampling_order_tier + ' ' + '(1001-2000)'
+                     WHEN cr.sampling_order_tier = 'TIER5' THEN
+                         cr.sampling_order_tier + ' ' + '(2001-5000)'
+                     WHEN cr.sampling_order_tier = 'TIER6' THEN
+                         cr.sampling_order_tier + ' ' + '(5001-11000)'
+                     WHEN cr.sampling_order_tier = 'TIER7' THEN
+                         cr.sampling_order_tier + ' ' + '(11000+)'
+                     ELSE
+                         ISNULL(
+                         (
+                             SELECT tr.storage_tier_name + ' (' + CAST(tr.range_start AS NVARCHAR(10)) + '-'
+                                    + CAST(tr.range_end AS NVARCHAR(10)) + ' ' + tr.range_uom + 's)'
+                             FROM AAD.dbo.t_bmm_ar_storage_tier tr (NOLOCK)
+                             WHERE tr.storage_tier_id = cr.storage_tier_id
+                         ),
+                         (
+                             SELECT rt.renewal_tier_name + ' (' + CAST(rt.range_start AS NVARCHAR(10)) + '-'
+                                    + CAST(rt.range_end AS NVARCHAR(10)) + ' ' + rt.range_uom + 's)'
+                             FROM AAD.dbo.t_bmm_ar_renewal_tier rt (NOLOCK)
+                             WHERE rt.renewal_tier_id = cr.renewal_tier_id
+                         )
+                               )
+                 END,
+                 'ALL'
+             ) AS storage_renewal_tier_name
+FROM t_bmm_customer cm (NOLOCK)
+    JOIN t_bmm_contract_master com (NOLOCK)
+        ON com.customer_id = cm.customer_id
+    JOIN t_bmm_contract_invoice_type cit (NOLOCK)
+        ON cit.contract_id = com.contract_id
+    JOIN t_bmm_cont_inv_type_chargeback chrg (NOLOCK)
+        ON chrg.contract_invoice_type_id = cit.contract_invoice_type_id
+    JOIN t_bmm_chargeback_type ct (NOLOCK)
+        ON ct.chargeback_type_id = chrg.chargeback_type_id
+    JOIN t_bmm_chargeback_rate cr (NOLOCK)
+        ON cr.chargeback_id = chrg.chargeback_id
+    JOIN dbo.t_bmm_gl_code gl
+        ON gl.gl_code_id = chrg.gl_code_id
+WHERE com.status = 'A'
+      AND cit.status = 'A'
+      AND chrg.status = 'A'
+      AND cr.rate_status = 'A'
+ORDER BY wh_id,
+         customer_name,
+         cit.contract_invoice_type_code;

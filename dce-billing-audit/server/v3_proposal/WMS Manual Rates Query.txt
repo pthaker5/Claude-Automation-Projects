@@ -1,0 +1,79 @@
+DECLARE @in_vchWhseID NVARCHAR(20),
+        @in_vchCustomerCode NVARCHAR(30),
+        @in_vchContractCode NVARCHAR(30),
+        @in_vchInvoiceTypeCode NVARCHAR(10),
+        @in_vchChargebackType NVARCHAR(50),
+        @in_vchChargebackCode NVARCHAR(10),
+        @in_vchRateStatus NVARCHAR(10),
+        @in_vchLocaleID NVARCHAR(10);
+
+SELECT cm.wh_id 'contract_wh_id',
+       cm.contract_code,
+       cust.customer_code,
+       cust.customer_name,
+       citchb.gl_code_id,
+       citchb.chargeback_code,
+       citchb.description,
+       citchb.status AS 'Chargeback_Status',
+	   cm.status AS 'Contract_Status',
+       chtp.chargeback_type,
+       '' AS chargeback_rate_id,
+       ISNULL(mca.chargeback_id, mp.chargeback_id) AS chargeback_id,
+       '1',
+       NULL AS stacking_seq,
+       dbo.usf_bmm_customer_number_format(
+                                             ISNULL(mca.chargeback_id, mp.chargeback_id),
+                                              NULL,
+                                             ISNULL(mca.rate, mp.rate),
+                                             'R',
+                                             @in_vchLocaleID
+                                         ) AS rate, --chrt.rate,
+       'A',
+       NULL AS item_number,
+       NULL AS container_type,
+       NULL AS dest_container_type,
+       NULL AS item_number_original,
+       NULL AS container_type_original,
+       NULL AS dest_container_type_original,
+                                                    --, ISNULL(chrt.item_number, dbo.usf_get_locale_text('ALL','constant',@in_vchLocaleID,'CONSTANT')) as item_number -- [5]
+
+                                                    --, ISNULL(container_type, dbo.usf_get_locale_text('ALL','constant',@in_vchLocaleID,'CONSTANT')) as container_type -- [5]
+
+                                                    --, ISNULL(dest_container_type, dbo.usf_get_locale_text('ALL','constant',@in_vchLocaleID,'CONSTANT')) as dest_container_type -- [5]
+       'All' AS uom,
+       'All' AS storage_device_id,
+       'All' AS storage_device_ref_type,
+       'All' AS 'rate_wh_id',
+       'All' AS inventory_category,
+       'All' AS inventory_class,
+       'All' AS inventory_type,
+       'All' AS class_id,
+       'All' AS lot_control,
+       'All' AS attribute_collection_id,
+       'All' AS order_type,
+       'All' AS order_carrier_scac,
+                                                    --ISNULL(sampling_order_tier, dbo.usf_get_locale_text('ALL','constant',@in_vchLocaleID,'CONSTANT')) as sampling_order_tier,
+       NULL AS [Tier],
+       citchb.effective_date,
+       citchb.expiry_date,
+       citchb.minimum_charge,
+       cust.customer_id
+FROM t_bmm_contract_master cm (NOLOCK)
+    INNER JOIN t_bmm_customer cust (NOLOCK)
+        ON cust.customer_id = cm.customer_id
+    INNER JOIN t_bmm_contract_invoice_type cit (NOLOCK)
+        ON cm.contract_id = cit.contract_id
+    INNER JOIN t_bmm_cont_inv_type_chargeback citchb (NOLOCK)
+        ON citchb.contract_invoice_type_id = cit.contract_invoice_type_id
+    INNER JOIN t_bmm_chargeback_type chtp (NOLOCK)
+        ON chtp.chargeback_type_id = citchb.chargeback_type_id
+    LEFT OUTER JOIN t_bmm_param_manual_csr_prompt mca (NOLOCK)
+        ON mca.chargeback_id = citchb.chargeback_id
+    LEFT OUTER JOIN t_bmm_param_manual_prompt mp (NOLOCK)
+        ON mp.chargeback_id = citchb.chargeback_id
+
+WHERE chargeback_type IN ( 'Manual - Prompted', 'Manual - CSR Prompted' )
+AND citchb.status = 'A'
+AND cm.status = 'A'
+
+-- AND mp.chargeback_id = '182032'
