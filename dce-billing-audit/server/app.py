@@ -17,13 +17,14 @@ load_dotenv()
 from sql_client import (
     pull_invoice, pull_rates, pull_lost_revenue,
     pull_railcar, pull_packaging, pull_bulk_orders, pull_recurring_storage,
+    pull_no_charges, pull_boxing_materials,
     _clean,
 )
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"  # + No-Charges & Boxing-Materials pulls in the EDW pipeline
 
 _pull_results = {}  # in-memory store for completed results
 
@@ -67,22 +68,24 @@ def api_pull():
         import queue, threading
 
         data = {}
-        total = 7
+        total = 9
 
         # ── Phase 1: parallel independent reports ────────────────────────────
         parallel_tasks = [
-            ("Invoice",     "invoice",      lambda: pull_invoice(start, end)),
-            ("Rates",       "rates",        lambda: pull_rates()),
-            ("Railcar",     "railcar",      lambda: pull_railcar(start, end)),
-            ("Packaging",   "packaging",    lambda: pull_packaging(start, end)),
-            ("Bulk Orders", "bulk_orders",  lambda: pull_bulk_orders(start, end)),
+            ("Invoice",          "invoice",          lambda: pull_invoice(start, end)),
+            ("Rates",            "rates",            lambda: pull_rates()),
+            ("Railcar",          "railcar",          lambda: pull_railcar(start, end)),
+            ("Packaging",        "packaging",        lambda: pull_packaging(start, end)),
+            ("Bulk Orders",      "bulk_orders",      lambda: pull_bulk_orders(start, end)),
+            ("No Charges",       "no_charges",       lambda: pull_no_charges(start, end)),
+            ("Boxing Materials", "boxing_materials", lambda: pull_boxing_materials(start, end)),
         ]
 
-        yield json.dumps({"progress": "Starting parallel pull (5 reports)…", "step": 0, "total": total}) + "\n"
+        yield json.dumps({"progress": "Starting parallel pull (7 reports)…", "step": 0, "total": total}) + "\n"
 
         completed = 0
         errors = []
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=7) as pool:
             futures = {}
             for label, key, fn in parallel_tasks:
                 fut = pool.submit(fn)

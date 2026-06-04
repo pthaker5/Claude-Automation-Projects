@@ -348,6 +348,77 @@ WHERE ord.actual_ship_date >= ? AND ord.actual_ship_date < ?
         conn.close()
 
 
+def pull_no_charges(start, end):
+    """No-Charges report (SSRS: HJ - Billable Activity with No Charges).
+
+    Engine contract — return a list of dicts with THESE column names (exactly):
+        [Order Number], [WH ID], [Vessel], [Name], [Description], [Date]
+    The engine reads r['Order Number'], r['WH ID'], r['Vessel'], r['Name'],
+    r['Description'], and r['Date'] (or r['Ship Date']). It only fires the
+    Railcar-Switch / Weekend-Miss check on ASN orders with Vessel containing RAILCAR.
+
+    >>> PASTE THE DATASET SQL FROM THE SSRS REPORT HERE <<<
+    Get it from: SSRS > Billing/Audit Reports > "HJ - Billable Activity with No
+    Charges" > open in Report Builder > Dataset > Query (or export the .rdl and
+    read the <CommandText>). Alias the SELECT columns to the bracketed names above
+    and bind ? to the date range, e.g.:
+
+        SELECT o.display_order_number AS [Order Number], o.wh_id AS [WH ID],
+               od.vessel AS [Vessel], cl.name AS [Name],
+               <billable-activity-desc> AS [Description],
+               o.actual_ship_date AS [Date]
+        FROM ...
+        WHERE o.actual_ship_date >= ? AND o.actual_ship_date < ?
+          AND <order has billable activity but no matching t_bmm_charge row>
+
+    Until the SQL is added this returns [] (EDW mode simply skips Weekend-Miss).
+    """
+    return []  # TODO: replace with _q(get_connection(), SQL, [start, end])
+
+
+def pull_boxing_materials(start, end):
+    """Boxing Materials report (SSRS: Qry-HJ-Boxing Materials).
+
+    Engine contract — return a list of dicts with THESE snake_case keys (exactly),
+    one row per material/charge line on a PW (packaging work) order:
+        order_num, description, customer_name, customer_code, invoice_number,
+        qty, charge_amount, wh_id, location, src_vessel, dest_vessel
+    (desc2 and closed_date are optional.) order_num must keep the 'PW...' prefix;
+    qty and charge_amount must be numeric. With this present the engine runs the
+    precise Boxing-Material + Bag-Qty checks; when empty it falls back to a coarse
+    invoice-only heuristic (more, noisier flags).
+
+    >>> PASTE THE DATASET SQL FROM THE SSRS REPORT HERE <<<
+    Get it from: SSRS > Billing/Audit Reports > "Qry-HJ-Boxing Materials" > open in
+    Report Builder > Dataset > Query. Alias columns to the snake_case names above
+    and bind ? to the date range. Starting point (mirrors pull_invoice, UNVERIFIED —
+    confirm tables/filter against the real report before trusting it):
+
+        SELECT c.order_num_value           AS order_num,
+               cb.description              AS description,
+               cust.customer_name          AS customer_name,
+               cust.customer_code          AS customer_code,
+               inv.invoice_number          AS invoice_number,
+               CAST(c.prompt_text_value AS FLOAT) AS qty,
+               CAST(c.charge_amount AS FLOAT)     AS charge_amount,
+               cm.wh_id                    AS wh_id,
+               ''                          AS location,
+               c.source_vessel             AS src_vessel,
+               c.dest_vessel               AS dest_vessel
+        FROM Korber.t_bmm_charge c
+        JOIN Korber.t_bmm_cont_inv_type_chargeback cb ON c.chargeback_id = cb.chargeback_id
+        JOIN Korber.t_bmm_invoice inv ON c.invoice_id = inv.invoice_id
+        JOIN Korber.t_bmm_contract_invoice_type cit ON cb.contract_invoice_type_id = cit.contract_invoice_type_id
+        JOIN Korber.t_bmm_contract_master cm ON cit.contract_id = cm.contract_id
+        JOIN Korber.t_bmm_customer cust ON cm.customer_id = cust.customer_id
+        WHERE inv.closed_date >= ? AND inv.closed_date < ?
+          AND c.order_num_value LIKE 'PW%%'
+
+    Until the SQL is added this returns [] (EDW mode uses the coarse fallback).
+    """
+    return []  # TODO: replace with _q(get_connection(), SQL, [start, end])
+
+
 def pull_recurring_storage(billing_date, warehouses=None, clients=None):
     if billing_date is None:
         return []

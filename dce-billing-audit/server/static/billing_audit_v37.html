@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v33 (Live Rates)</title>
+<title>DC&E Billing Audit v39 (EDW Direct)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -193,7 +193,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v38 · EDW Direct</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v39 · EDW Direct</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -309,6 +309,10 @@ var NB = new Set(['BOX','BAG','SUPERSACK','DRUM','TOTE','UNIT','ROLL','BUN','CRA
 var CORE = ['HAND','HANDCWT','HAND OUT','RECSTORAG','INBSTOPLT','INBSTOCWT','INBSTOWT',
   'PACK BU-BA','PACK-BU-BO','PACK-BU-SS','PACK BU-BO','PACK BU-SS',
   'REPACK','BOXBULK','BAGBULK','SSBULK','BULKBULK'];
+/* CHANGELOG v39 (EDW Direct): goEDW() now passes nc (data.no_charges) and bxm
+   (data.boxing_materials) to engine() instead of []. Restores the No-Charges/
+   Weekend-Miss and precise Boxing/Bag-Qty checks once the server pulls return them.
+   Was: nc=[] bxm=[] -> coarse invoice-only boxing fallback (227 extra coarse flags). */
 /* ===== MODE TOGGLE (v19) ===== */
 var _mode = 'upload';
 function setMode(m){ return; }
@@ -2308,7 +2312,9 @@ async function goEDW(){
     var lost = (data.lost_revenue || []).filter(function(r){ return r['WH ID'] != null; });
     // rr: rates — column names (customer_code, contract_wh_id, etc.) match engine()
     var rr   = data.rates        || [];
-    var nc   = []; // not yet implemented in EDW mode
+    // nc: No-Charges report. Column names (Order Number, WH ID, Vessel, Name, Description, Date)
+    // already match engine() expectations. Empty until the EDW pull is wired (server returns []).
+    var nc   = data.no_charges   || [];
     var rc   = data.railcar      || [];
     var pkg  = data.packaging    || [];
 
@@ -2317,7 +2323,10 @@ async function goEDW(){
 
     var bulk = data.bulk_orders || [];
     var stor = data.recurring_storage || [];
-    var bxm = [];
+    // bxm: Boxing Materials report, snake_case keys (order_num, description, customer_name,
+    // customer_code, invoice_number, qty, charge_amount, wh_id, location, src_vessel, dest_vessel).
+    // When empty the engine falls back to a coarse invoice-only boxing heuristic.
+    var bxm  = data.boxing_materials || [];
     try {
       R = engine(inv, lost, rr, nc, rc, pkg, dsDate, deDate, bxm, bulk, stor);
     } catch(engineErr) {
