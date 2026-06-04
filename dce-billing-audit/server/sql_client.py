@@ -15,31 +15,76 @@ from decimal import Decimal
 
 import pyodbc
 
-SERVER   = os.getenv("EDW_DEV_SERVER", "dev-quantix-useast-sql.database.windows.net")
-DATABASE = os.getenv("EDW_DEV_DB", "EDW_Dev")
+# ── Connection settings ───────────────────────────────────────────────────────
+# Default to the on-prem EDW (Windows / Trusted auth) — the Azure endpoint
+# (dev-quantix-useast-sql.database.windows.net) is blocked by VPN/firewall and
+# fails with a TLS prelogin / 10054 "connection forcibly closed" error.
+# EDW_SERVER/EDW_DB take precedence; legacy EDW_DEV_* names still work.
+SERVER   = os.getenv("EDW_SERVER")  or os.getenv("EDW_DEV_SERVER", "az-bwprod.chemlogix.com")
+DATABASE = os.getenv("EDW_DB")      or os.getenv("EDW_DEV_DB", "CLXDW")
+PORT     = os.getenv("EDW_PORT", "1433")
 TENANT   = os.getenv("EDW_SP_TENANT_ID", "")
 CID      = os.getenv("EDW_SP_CLIENT_ID", "")
 CSEC     = os.getenv("EDW_SP_CLIENT_SECRET", "")
 
+# Auth: "trusted" = Windows integrated (on-prem); "sp" = Azure AD service principal.
+# Blank = auto: use sp only when SP creds are set AND the server is Azure SQL.
+EDW_AUTH    = os.getenv("EDW_AUTH", "").strip().lower()
+ENCRYPT     = os.getenv("EDW_ENCRYPT", "yes")          # yes | no | optional
+TRUST_CERT  = os.getenv("EDW_TRUST_CERT", "yes")       # yes | no
+LOGIN_TIMEOUT = int(os.getenv("EDW_LOGIN_TIMEOUT", "60"))
+
+
+def _auth_mode():
+    if EDW_AUTH in ("trusted", "windows", "integrated"):
+        return "trusted"
+    if EDW_AUTH in ("sp", "serviceprincipal", "service_principal", "azuread", "aad"):
+        return "sp"
+    # auto-detect
+    if TENANT and CID and CSEC and "database.windows.net" in SERVER.lower():
+        return "sp"
+    return "trusted"
+
+
+def _base_conn_str():
+    return (
+        "Driver={ODBC Driver 18 for SQL Server};"
+        f"Server=tcp:{SERVER},{PORT};Database={DATABASE};"
+        f"Encrypt={ENCRYPT};TrustServerCertificate={TRUST_CERT};"
+    )
+
 
 def get_connection():
-    """Thread-safe: each call returns a fresh connection."""
-    url  = f"https://login.microsoftonline.com/{TENANT}/oauth2/token"
-    data = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "client_id": CID,
-        "client_secret": CSEC,
-        "resource": "https://database.windows.net/",
-    }).encode()
-    token = json.loads(urllib.request.urlopen(url, data).read())["access_token"]
-    tb = token.encode("utf-16-le")
-    ts = struct.pack(f"<I{len(tb)}s", len(tb), tb)
-    conn = pyodbc.connect(
-        f"Driver={{ODBC Driver 18 for SQL Server}};"
-        f"Server=tcp:{SERVER},1433;Database={DATABASE};"
-        f"Encrypt=yes;TrustServerCertificate=yes;",
-        attrs_before={1256: ts}, timeout=60,
-    )
+    """Thread-safe: each call returns a fresh connection.
+
+    Supports on-prem SQL Server (Windows/Trusted auth) and Azure SQL
+    (Azure AD service-principal token), selected by EDW_AUTH (default: auto).
+    """
+    mode = _auth_mode()
+    try:
+        if mode == "sp":
+            url  = f"https://login.microsoftonline.com/{TENANT}/oauth2/token"
+            data = urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_id": CID,
+                "client_secret": CSEC,
+                "resource": "https://database.windows.net/",
+            }).encode()
+            token = json.loads(urllib.request.urlopen(url, data).read())["access_token"]
+            tb = token.encode("utf-16-le")
+            ts = struct.pack(f"<I{len(tb)}s", len(tb), tb)
+            conn = pyodbc.connect(_base_conn_str(), attrs_before={1256: ts},
+                                  timeout=LOGIN_TIMEOUT)
+        else:  # trusted (Windows integrated) — on-prem
+            conn = pyodbc.connect(_base_conn_str() + "Trusted_Connection=yes;",
+                                  timeout=LOGIN_TIMEOUT)
+    except pyodbc.Error as e:
+        raise RuntimeError(
+            f"Could not connect to {SERVER}:{PORT}/{DATABASE} (auth={mode}). "
+            f"Check EDW_SERVER/EDW_DB/EDW_AUTH in .env and that you're on the VPN. "
+            f"If TLS prelogin fails on an old server, try EDW_ENCRYPT=optional. "
+            f"Original error: {e}"
+        ) from e
     conn.timeout = 600
     return conn
 
