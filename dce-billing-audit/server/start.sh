@@ -1,32 +1,37 @@
 #!/usr/bin/env bash
-# DC&E Billing Audit - one-command start for macOS/Linux.
-#   ./start.sh
-# First run sets everything up; later runs just start the server.
+# One-command start for macOS/Linux:  ./start.sh
 set -e
 cd "$(dirname "$0")"
 
-PY=${PYTHON:-python3}
+echo "============================================================"
+echo "  DC&E Billing Audit - setup & start"
+echo "  Folder: $(pwd)"
+echo "============================================================"
 
-if [ ! -d .venv ]; then
-  echo "Creating Python environment (first run only)..."
+PY=${PYTHON:-python3}
+if ! command -v "$PY" >/dev/null 2>&1; then
+  echo "[ERROR] python3 not found. Install Python 3 and re-run." >&2
+  exit 1
+fi
+
+if [ ! -x .venv/bin/python ]; then
+  echo "Creating virtual environment (first run only)..."
   "$PY" -m venv .venv
 fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
+VENV_PY=.venv/bin/python
 
 echo "Installing/updating dependencies..."
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -r requirements.txt
+"$VENV_PY" -m pip install --upgrade pip
+"$VENV_PY" -m pip install -r requirements.txt
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo
-  echo "============================================================"
-  echo "  Created .env from the template."
-  echo "  Edit .env, fill in the EDW credentials/secret, then re-run."
-  echo "============================================================"
-  echo
+  echo "------------------------------------------------------------"
+  echo "  Created .env from the template. Set EDW_SERVER / EDW_DB to"
+  echo "  your SQL server, then re-run ./start.sh"
+  echo "------------------------------------------------------------"
   exit 0
 fi
 
-exec python run.py
+echo "Launching server... (open http://localhost:5100)"
+exec "$VENV_PY" run.py
