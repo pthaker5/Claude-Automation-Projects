@@ -1,0 +1,12 @@
+# downloaded market data: never committed — the recipe (code+params) is, the bytes aren't
+data/*
+!data/.gitkeep
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+build/
+dist/

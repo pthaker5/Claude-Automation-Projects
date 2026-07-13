@@ -1,0 +1,16 @@
+# Core (needed from Module 00)
+numpy>=1.26
+pandas>=2.1
+pytest>=8
+matplotlib>=3.8
+
+# Data (online sessions; quantlab falls back to synthetic data without it)
+yfinance>=0.2.40
+
+# Installed as modules require them (uncomment when reached):
+# scipy>=1.11          # Module 01+
+# statsmodels>=0.14    # Modules 01, 04 (regression, ADF, GARCH via arch)
+# arch>=6.3            # Module 04 (GARCH)
+# polars>=0.20         # Module 02
+# scikit-learn>=1.4    # Module 08
+# lightgbm>=4.3        # Module 08
