@@ -1,0 +1,1 @@
+# Populated when the project starts; keep pinned and current (CLAUDE.md Rule 6).
