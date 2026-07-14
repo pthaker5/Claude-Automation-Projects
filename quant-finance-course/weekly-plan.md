@@ -6,16 +6,18 @@ gets re-cut*):
 
 - Career target: **Quant Researcher**, buy-side
 - Time budget: **~10 hrs/week** (2 weekday evenings + one weekend block)
-- Background: comfortable-but-rusty undergrad math, working Python, light finance — the Module 00
-  warm-up doubles as the placement test; the plan below stretches or compresses based on it.
+- Background: **calibrated 2026-07-14** — engineering undergrad, probability dormant ~7–8 years;
+  Module 00 runs refresher-first and takes ~3 weeks. Python/finance levels still assumed
+  (working Python, light finance) pending evidence from Module 00 exercises.
 
 **Cadence per week**: ~60% problem-solving/exercises, ~25% reading, ~15% oral drill with the
 tutor. Every session starts with one interview warm-up question (tutor protocol, CLAUDE.md §1).
 
 | Week | Focus | Deliverable / gate |
 |------|-------|--------------------|
-| 1 | Module 00: warm-up set (placement), lesson §1–5, drills | `warmup.md` answers graded; weak areas logged |
-| 2 | Module 00: LLN/CLT, linear algebra, Exercises 1–3 on real data | Exercise review passed; **Module 00 quiz** |
+| 1 | Module 00: technique refresher, warm-up set worked open-notes with tutor | All 8 warm-up problems attempted + orals; weak areas logged |
+| 2 | Module 00: lesson §1–5 re-drill (closed-notes reps), LLN/CLT, linear algebra | Cold re-solve of ≥5 warm-up-style problems |
+| 3 | Module 00: Exercises 1–3 on real data | Exercise review passed; **Module 00 quiz** (closed notes) |
 | 3 | Module 01: estimation, hypothesis testing on strategy returns | Exercises + oral drill |
 | 4 | Module 01: regression abuses, multiple testing | **Module 01 quiz**; kill-an-alpha exercise write-up |
 | 5 | Module 02: numpy/pandas performance, vectorization kata | Kata speedups measured & reviewed |

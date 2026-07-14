@@ -5,7 +5,9 @@
 The kickoff prompt's background/time/target fields were left as placeholders, so the tutor
 assumed defaults. **First session: correct these, then re-cut `weekly-plan.md` if needed.**
 
-- **Math level**: _assumed_ comfortable-but-rusty undergrad (calc, linear algebra, some prob/stat)
+- **Math level**: **CONFIRMED (2026-07-14)** — engineering undergrad; probability/statistics
+  coursework ~7–8 years ago; can't attempt interview problems cold, needs refreshers first.
+  Module 00 runs refresher-first, open-notes, with closed-notes only at the quiz gate.
 - **Coding level**: _assumed_ working Python, limited numpy/pandas performance experience
 - **Finance knowledge**: _assumed_ light/informal
 - **Time budget**: _assumed_ ~10 hrs/week
@@ -14,11 +16,13 @@ assumed defaults. **First session: correct these, then re-cut `weekly-plan.md` i
 
 ## Current status
 
-- **Module**: 00 — Math & Probability Foundations (started)
-- **Open assignment**: `modules/module-00-math-probability/warmup.md` — 8 problems, closed
-  notes, ~90 min, answers with reasoning in `answers.md` in that directory. This doubles as the
-  placement test that calibrates everything above.
-- **Next gate**: warm-up graded → Exercises 1–3 → Module 00 quiz.
+- **Module**: 00 — Math & Probability Foundations (started, refresher-first mode)
+- **Open assignment**: warm-up set (`modules/module-00-math-probability/warmup.md`), now
+  **open-refresher**: tutor delivered a technique refresher in chat (2026-07-14); student works
+  the 8 problems with the refresher available, untimed. Grading emphasis shifts to reasoning
+  quality and oral follow-ups, since lookup is now possible.
+- **Next gate**: warm-up worked through with tutor → lesson notes + drills → Exercises 1–3 →
+  Module 00 quiz (**closed notes** — that's where recall is finally tested).
 
 ## Warm-up interview question log
 
@@ -39,9 +43,22 @@ One per session, served before anything else; no repeats. Format:
 - Assumptions recorded above pending student calibration.
 - Assigned: Module 00 warm-up problem set.
 
+### Session 1 — 2026-07-14 (calibration)
+
+- Student calibration: engineering-undergrad probability, ~7–8 years dormant; cannot attempt
+  the warm-up cold. Exactly what placement was for — no penalty, plan adjusted.
+- Tutor delivered an 8-tool probability refresher in chat (conditioning, complement,
+  indicators/linearity, first-step recursion, Bayes, PSD correlation bounds, normal tails,
+  fair-game reasoning), each with a micro-example distinct from the assigned problems.
+- Warm-up converted from closed-notes placement to open-refresher working session.
+- Plan impact: Module 00 now spans ~weeks 1–3; later modules shift back accordingly
+  (`weekly-plan.md` updated; full re-cut at the week-4 checkpoint).
+
 ## Strengths / weaknesses (tutor's honest running assessment)
 
-*Empty until the warm-up is graded. This section stays blunt by design.*
+- **Known gap (2026-07-14)**: probability recall is dormant; retrieval-under-pressure is the
+  skill to rebuild, not comprehension. Expect heavy spaced re-drilling of the same techniques
+  across sessions until answers come without notes. Quiz stays closed-notes — no bar-lowering.
 
 ## Configurations-tried counters (multiple-testing honesty, per project)
 
