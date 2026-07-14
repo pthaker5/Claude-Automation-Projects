@@ -1,3 +1,44 @@
+# v1.16.9 (2026-07-14) - Frontier-aligned completeness (close-day false positives)
+
+## Context: audit of the "switch pull_invoice to charge_date_time" proposal
+An external review (Open Claw) correctly re-derived that pull_invoice filters on
+inv.closed_date (billing axis) while activity checks filter on work/ship dates,
+and proposed re-filtering the invoice pull on c.charge_date_time. REJECTED:
+- closed_date windows PARTITION billed charges (each charge audited exactly
+  once; consecutive weekly windows tile). charge_date windows leak: the 07-13
+  batch contains charges work-dated 07-01..07-05 that no charge_date-filtered
+  weekly window would ever audit (didn't exist during their week's audit,
+  excluded by date from this week's).
+- charge_date_time is documented-dirty (future-dated rows: 2028-03-06, 07-26).
+- Total Billed would stop reconciling to the billing batch.
+- The apparent win (07-06..07-12 returning ~11.7k) is retrospective-only:
+  before the batch runs, pending work has no charge rows on ANY axis.
+The intentional design stands: audit the batch (closed_date), suppress
+activity-completeness checks past the point where billing is confirmed.
+
+## THE REAL RESIDUE it surfaced (fixed here)
+With batch_complete=true, v1.16.6-8 snapped the completeness cutoff to the
+audit END. But the batch-close day itself (07-13) carries activity whose
+billing closes in the NEXT batch (~637 activity rows for 07-06..07-13): LR-based
+categories ($0+Billing Link, Missing Supply, BO/packaging) audited those ships
+against invoices that cannot contain them -> false positives inflating the
+action-item count.
+
+## FIX
+1. JS cutoff: ALWAYS hold at the material frontier (07-12), complete or not.
+   Close-day activity is suppressed as pending and gets audited next week in
+   the window whose batch covers it - each activity day audited exactly once.
+2. onOrAfterBillingHorizon: >= changed to strictly-after. Under v1.16.8
+   in-window coverage the frontier day is >=95% billed inside the window, so
+   its activity is auditable; the old >= dropped a fully-billed day (07-12,
+   236 charges) from No-Charges coverage. This also preserves the v1.16.6
+   goal (nothing billed-in-window is suppressed) without the close-day leak.
+Expected on re-run of 07-06..07-13: Charges/Total Billed unchanged
+(11,752 / $3.66M); action items drop by the close-day false positives; amber
+"billing pending: N rows after 7/12" note appears (accurate).
+
+---
+
 # v1.16.8 (2026-07-13) - In-window billing coverage + window-truncation banner
 
 ## THE PROBLEM (found by running 07-06..07-12 vs 07-06..07-13 side by side)

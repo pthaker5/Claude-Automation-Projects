@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.16.8 (In-Window Billing Coverage)</title>
+<title>DC&E Billing Audit v1.16.9 (Frontier-Aligned Completeness)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -205,7 +205,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.16.8 · In-Window Billing Coverage</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.16.9 · Frontier-Aligned Completeness</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -1029,13 +1029,19 @@ function engine(inv, lost, rr, nc, rc, pkg, ds, de, bxm, bulk, stor, billingHori
       // batch is complete, snap the cutoff to the audit end date so no in-window
       // row is dropped. Only when the batch is genuinely incomplete do we lower
       // the cutoff to the frontier to hold back the un-posted trailing days.
-      if(billingHorizon.batch_complete !== false && _deChk){
-        _maxChargeDate = _deChk;                 // batch complete -> audit full window
-        _horizonSource = 'billing complete through audit end (t_bmm_charge, batch confirmed)';
-      } else {
-        _maxChargeDate = _bh;                    // incomplete batch -> hold at frontier
-        _horizonSource = 'material billing frontier ' + billingHorizon.horizon + ' (t_bmm_charge; later activity pending)';
-      }
+      // v1.16.9 FIX: hold the completeness cutoff at the FRONTIER even when the
+      // batch is complete. The batch-close day itself (e.g. 07-13) carries
+      // activity whose billing closes in the NEXT batch; snapping the cutoff to
+      // the audit end audited that day's ships against invoices that cannot
+      // contain them, false-flagging every one ($0+Link / Missing Supply / LR
+      // categories -- observed 637 close-day activity rows on 07-06..07-13).
+      // The frontier day itself remains fully auditable because
+      // onOrAfterBillingHorizon() is now strictly-after (v1.16.9). Each activity
+      // day is audited exactly once: in the window whose batch covers it.
+      _maxChargeDate = _bh;
+      _horizonSource = (billingHorizon.batch_complete !== false)
+        ? 'billing complete through ' + billingHorizon.horizon + ' (t_bmm_charge, batch confirmed; later activity bills in the next batch)'
+        : 'material billing frontier ' + billingHorizon.horizon + ' (t_bmm_charge; later activity pending)';
       _maxChargeDateCapped = false;
     }
   }
@@ -1077,7 +1083,11 @@ function engine(inv, lost, rr, nc, rc, pkg, ds, de, bxm, bulk, stor, billingHori
     if(!sd) return false;
     var sdDay  = new Date(sd.getFullYear(),          sd.getMonth(),          sd.getDate());
     var cutDay = new Date(_maxChargeDate.getFullYear(), _maxChargeDate.getMonth(), _maxChargeDate.getDate());
-    return sdDay >= cutDay;
+    // v1.16.9: strictly AFTER. Under in-window coverage (v1.16.8) the frontier
+    // day is by definition >=95% billed inside the pulled window, so its
+    // activity is auditable; only days after it are pending. The old >= dropped
+    // a fully-billed day (e.g. 07-12, 236 charges) from No-Charges coverage.
+    return sdDay > cutDay;
   }
   // Running tally of rows suppressed by billing-horizon cutoff (displayed in UI banner).
   var _pendingCount = 0;
