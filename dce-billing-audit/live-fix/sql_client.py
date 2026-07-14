@@ -437,7 +437,8 @@ def pull_billing_horizon(start, end):
 
     Returns dict: {horizon, max_charge_date, material_frontier, batch_complete,
                    charge_rows, by_day, frontier_method, trailing_trickle_days,
-                   frontier_gap_days}
+                   frontier_gap_days, window_truncated, billed_after_end,
+                   next_close_date}
     """
     COVERAGE_MIN = 0.95   # >= 95% of charges must have closed_date NOT NULL
     TINY_DAY_MIN = 20     # days below this can neither advance nor block the frontier
@@ -446,17 +447,44 @@ def pull_billing_horizon(start, end):
     try:
         # Inclusive on charge date: charges dated [start, end] — same window bound
         # as v1.16.4. Join to invoice for closed_date coverage test.
+        #
+        # v1.16.8: "billed" now means billed WITHIN THE PULLED WINDOW
+        # (closed_date <= audit end), not "billed at all". pull_invoice only
+        # returns invoices closed inside the window, so a charge closed AFTER the
+        # end date is invisible to every completeness check — treating it as
+        # "billed" declared batch_complete=True while the engine audited a week
+        # of activity against an essentially empty invoice set (observed:
+        # window 07-06..07-12 showed 'billing complete' + 21 charges + 844
+        # action items, ~all false; the week's batch closed 07-13, one day past
+        # the end). billed_late counts those out-of-window closes so the UI can
+        # tell the user exactly what to do: extend the end date to next_close.
         rows = _q(conn, """
 SELECT CAST(c.charge_date_time AS DATE) AS d,
        COUNT(*) AS total,
-       SUM(CASE WHEN inv.closed_date IS NOT NULL THEN 1 ELSE 0 END) AS billed
+       SUM(CASE WHEN inv.closed_date IS NOT NULL
+                 AND inv.closed_date < DATEADD(day, 1, CAST(? AS DATE))
+            THEN 1 ELSE 0 END) AS billed,
+       SUM(CASE WHEN inv.closed_date >= DATEADD(day, 1, CAST(? AS DATE))
+            THEN 1 ELSE 0 END) AS billed_late
 FROM Korber.t_bmm_charge c
 LEFT JOIN Korber.t_bmm_invoice inv ON c.invoice_id = inv.invoice_id
 WHERE c.charge_date_time >= ? AND c.charge_date_time < DATEADD(day, 1, CAST(? AS DATE))
   AND c.charge_amount <> 0
 GROUP BY CAST(c.charge_date_time AS DATE)
 ORDER BY d
-""", [start, end])
+""", [end, end, start, end])
+
+        # Next batch-close date for this window's late-billed work (None when
+        # everything closed in-window). This is the date the user should extend
+        # their End Date to in order to audit the window's billing.
+        nc_rows = _q(conn, """
+SELECT MIN(CAST(inv.closed_date AS DATE)) AS next_close
+FROM Korber.t_bmm_charge c
+JOIN Korber.t_bmm_invoice inv ON c.invoice_id = inv.invoice_id
+WHERE c.charge_date_time >= ? AND c.charge_date_time < DATEADD(day, 1, CAST(? AS DATE))
+  AND c.charge_amount <> 0
+  AND inv.closed_date >= DATEADD(day, 1, CAST(? AS DATE))
+""", [start, end, end])
 
         def _as_date(x):
             # _fix() may stringify DATE columns; normalize to datetime.date.
@@ -473,14 +501,19 @@ ORDER BY d
             (_as_date(r.get("d")), int(r.get("total", 0) or 0), int(r.get("billed", 0) or 0))
             for r in rows if r.get("d")
         ]
-        return _billing_frontier_analysis(by_day_raw, _as_date(end),
-                                          coverage_min=COVERAGE_MIN,
-                                          tiny_day_min=TINY_DAY_MIN)
+        result = _billing_frontier_analysis(by_day_raw, _as_date(end),
+                                            start_d=_as_date(start),
+                                            coverage_min=COVERAGE_MIN,
+                                            tiny_day_min=TINY_DAY_MIN)
+        result["billed_after_end"] = sum(int(r.get("billed_late", 0) or 0) for r in rows)
+        _nc = _as_date(nc_rows[0].get("next_close")) if nc_rows and nc_rows[0].get("next_close") else None
+        result["next_close_date"] = (_nc.isoformat() if _nc else None)
+        return result
     finally:
         conn.close()
 
 
-def _billing_frontier_analysis(by_day_raw, end_d,
+def _billing_frontier_analysis(by_day_raw, end_d, start_d=None,
                                coverage_min=0.95, tiny_day_min=20,
                                complete_max_gap_days=1):
     """Pure frontier/batch-completeness analysis over per-day (date, total, billed)
@@ -539,9 +572,24 @@ def _billing_frontier_analysis(by_day_raw, end_d,
             and ((billed / total) if total > 0 else 0.0) < coverage_min
         )
 
-    # Horizon = billed frontier, capped at audit end. Fall back to max charge
-    # date only if NO material day cleared coverage (degenerate/empty window).
-    horizon_d = material_frontier or max_cd
+    # v1.16.8: WINDOW-TRUNCATION detection. When material work-days exist but
+    # NONE clears in-window coverage, the window's billing posted entirely
+    # AFTER the end date (the caller's coverage counts only closes <= end).
+    # Auditing such a window against its (near-empty) invoice pull would flood
+    # false completeness items, so the horizon collapses to the day before
+    # start — the JS cutoff then suppresses every completeness check in the
+    # window — and window_truncated tells the UI to prompt the user to extend
+    # the end date to next_close_date.
+    has_material_day = any(t >= tiny_day_min for _, t, _ in by_day_raw)
+    window_truncated = bool(has_material_day and material_frontier is None)
+
+    # Horizon = billed frontier, capped at audit end. Truncated window → day
+    # before start (suppress all). Fall back to max charge date only when the
+    # window has no material day at all (holiday/empty week — old behavior).
+    if window_truncated and start_d:
+        horizon_d = start_d - timedelta(days=1)
+    else:
+        horizon_d = material_frontier or max_cd
     if horizon_d and end_d and horizon_d > end_d:
         horizon_d = end_d
 
@@ -572,6 +620,7 @@ def _billing_frontier_analysis(by_day_raw, end_d,
             "frontier_method": frontier_method,
             "trailing_trickle_days": trailing_trickle_days,
             "frontier_gap_days": frontier_gap_days,
+            "window_truncated": window_truncated,
             "by_day": by_day}
 
 

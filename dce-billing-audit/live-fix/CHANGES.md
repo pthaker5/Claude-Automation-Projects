@@ -1,3 +1,37 @@
+# v1.16.8 (2026-07-13) - In-window billing coverage + window-truncation banner
+
+## THE PROBLEM (found by running 07-06..07-12 vs 07-06..07-13 side by side)
+A window ending one day before the batch-close day (07-12 vs 07-13) showed
+"billing complete through audit end" + 21 charges + 844 action items. The 844
+were ~all false: the week's charges exist but closed on 07-13, OUTSIDE the
+pulled window, so every completeness check compared a week of activity against
+a near-empty invoice set. Root cause: the frontier detector counted a work-day
+as "billed" if its charges had ANY closed_date - including closes after the
+window end that pull_invoice can never return.
+
+## FIXES
+1. sql_client.pull_billing_horizon: "billed" now means closed_date <= audit end
+   (in-window). Charges closed after the end are counted separately as
+   billed_after_end, and next_close_date reports the batch-close date the user
+   should extend to.
+2. _billing_frontier_analysis: new window_truncated state - material work-days
+   exist but NONE is billed in-window -> horizon collapses to start-1 (JS
+   suppresses ALL completeness checks) and batch_complete=False. Also fixes the
+   retrospective variant: an end-day whose work billed in the NEXT batch no
+   longer passes coverage, so its activity is correctly held out of
+   completeness checks.
+3. billing_audit.html: red banner for truncated windows - "N charges for this
+   window's work were billed AFTER your End Date (batch closed <date>). Extend
+   your End Date to <date> and re-run." Engine exposes windowTruncated /
+   nextCloseDate / billedAfterEnd. Also: server horizon date now parsed at
+   LOCAL midnight (bare ISO parsed as UTC shifted the incomplete-mode cutoff a
+   day early in US-timezone browsers).
+
+Unit tests: 8 scenarios pass, including both observed windows (07-06..07-12
+truncated; 07-06..07-13 complete) and the mid-batch regression guard.
+
+---
+
 # v1.16.7 (2026-07-13) - Mechanism C actually shipped + frontier hardening + railcar end-day
 
 ## PRIMARY FIX - app.py off-by-one (Mechanism C) WAS MISSING FROM v1.16.6

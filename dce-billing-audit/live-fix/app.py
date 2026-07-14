@@ -30,7 +30,7 @@ rates_cache_startup()
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
-APP_VERSION = "1.16.7"
+APP_VERSION = "1.16.8"
 
 _pull_results = {}  # in-memory store for completed results
 

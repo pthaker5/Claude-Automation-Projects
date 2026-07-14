@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.16.7 (End-Inclusive Window)</title>
+<title>DC&E Billing Audit v1.16.8 (In-Window Billing Coverage)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -205,7 +205,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.16.7 · End-Inclusive Window</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.16.8 · In-Window Billing Coverage</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -1013,7 +1013,10 @@ function engine(inv, lost, rr, nc, rc, pkg, ds, de, bxm, bulk, stor, billingHori
   // capped at audit end. Upload mode (no billingHorizon) keeps legacy behavior.
   var _horizonSource = 'invoice max(Charge Date)';
   if(billingHorizon && billingHorizon.horizon){
-    var _bh = pd2(billingHorizon.horizon);
+    // v1.16.8: horizon is a date-only ISO string; parse at LOCAL midnight.
+    // Bare 'YYYY-MM-DD' parses as UTC and lands a day early in US timezones,
+    // shifting the incomplete-batch cutoff one day earlier than the server set.
+    var _bh = pd2(String(billingHorizon.horizon) + 'T00:00:00');
     if(_bh){
       var _deChk = pd2(de);
       if(_deChk && _bh > _deChk) _bh = _deChk;  // defensive: cap at audit end
@@ -1040,6 +1043,10 @@ function engine(inv, lost, rr, nc, rc, pkg, ds, de, bxm, bulk, stor, billingHori
   st.batchComplete = billingHorizon ? (billingHorizon.batch_complete !== false) : true;
   st.billingFrontier = (billingHorizon && billingHorizon.horizon) ? billingHorizon.horizon : null;
   st.trailingTrickleDays = (billingHorizon && billingHorizon.trailing_trickle_days) || 0;
+  // v1.16.8: window-truncation info (billing for this window posted after the end date)
+  st.windowTruncated = !!(billingHorizon && billingHorizon.window_truncated);
+  st.nextCloseDate = (billingHorizon && billingHorizon.next_close_date) || null;
+  st.billedAfterEnd = (billingHorizon && billingHorizon.billed_after_end) || 0;
   var _lastInvDate = null;
   if(_maxChargeDate){
     _lastInvDate = new Date(_maxChargeDate);
@@ -3062,8 +3069,18 @@ function renderOverview(){
     // banner tells the user WHY the recent week reads lighter and that it is
     // provisional until the batch posts.
     if(s.batchComplete === false){
+      if(s.windowTruncated){
+        // v1.16.8: the window's billing posted AFTER the end date (DC&E bills in
+        // batches; the batch-close day often falls the day after the work week).
+        // Auditing this window as-is would compare a week of activity against a
+        // near-empty invoice set, so completeness checks are fully suppressed.
+        var _ext = s.nextCloseDate ? ' Extend your End Date to <b>'+s.nextCloseDate+'</b> and re-run to audit this window.' : ' Extend your End Date past the batch-close day and re-run.';
+        var _cnt = s.billedAfterEnd ? ('<b>'+s.billedAfterEnd.toLocaleString()+'</b> charges for this window\'s work were billed ') : 'This window\'s billing posted ';
+        pendingNote += '<br><span style="font-size:12.5px;color:var(--red);font-weight:700">⛔ '+_cnt+'AFTER your End Date'+(s.nextCloseDate ? ' (batch closed <b>'+s.nextCloseDate+'</b>)' : '')+' — they are not in this audit window.'+_ext+' Charge-completeness checks are suppressed for this run to avoid false positives.</span>';
+      } else {
       var _fr = s.billingFrontier || (lid ? ((lid.getMonth()+1)+'/'+lid.getDate()+'/'+lid.getFullYear()) : '');
       pendingNote += '<br><span style="font-size:12.5px;color:var(--red);font-weight:700">⛔ Weekly billing batch has not run for the end of this window. Billing is complete only through <b>'+_fr+'</b>. Charge-completeness checks (No Charges, Bulk Order, Packaging, Missing Supply/Terminal) are held to that date. Re-run after the batch posts (typically the following Monday) for the full week.</span>';
+      }
     }
     // v1.16.1: recurring-storage billing date the backend actually used (auto-snapped
     // to the real Group-3 storage-invoice close date). Surfaced so the user sees
