@@ -504,26 +504,26 @@ def chart_late_vs_ontime(df_perf: pd.DataFrame, ym_list: List[str], labels: Dict
         if (ot + grp['late'].iloc[i]) > 0 and ym in label_pct:
             ax.text(i, ot / 2, f'{label_pct[ym]:.2f}%', ha='center', va='center',
                     color='white', fontsize=13, fontweight='bold')
-    # Dashed target reference line (OTP target on pickup, OTD on delivery),
-    # drawn on a 0-100% twin axis so it reads against the in-bar % labels --
-    # the count bars keep their own left-hand scale untouched.
+    # Dashed per-bar target markers (OTP target on pickup, OTD on delivery).
+    # Each month's marker sits at target% of THAT month's total bar height, so
+    # the green on-time segment reaching the marker means the month is on
+    # target.  (A single flat line on a hidden 0-100% axis floated above the
+    # shorter bars and read as "under target" even when the labels beat it.)
     target = OTP_TARGET_PCT if side == 'PU' else OTD_TARGET_PCT
-    ax_pct = ax.twinx()
-    ax_pct.set_ylim(0, 100)
-    ax_pct.axhline(target, color=TARGET_LINE_COLOR, linestyle=(0, (6, 3)), linewidth=1.6)
-    ax_pct.set_yticks([target])
-    ax_pct.set_yticklabels([f'{target:g}%'], fontsize=9, color=TARGET_LINE_COLOR,
-                           fontweight='bold')
-    ax_pct.spines['top'].set_visible(False)
-    ax_pct.spines['right'].set_visible(False)
-    ax_pct.tick_params(axis='y', length=0)
+    half_w = bar_w / 2 * 1.35
+    for i in range(len(ym_list)):
+        tot = totals.iloc[i]
+        if tot > 0:
+            ax.plot([x[i] - half_w, x[i] + half_w], [tot * target / 100.0] * 2,
+                    color=TARGET_LINE_COLOR, linestyle=(0, (4, 2)), linewidth=1.8,
+                    zorder=5, solid_capstyle='butt')
     ax.set_xticks(x)
     ax.set_xticklabels([labels.get(y, y) for y in ym_list], fontsize=12)
     ax.set_ylabel('Shipment Count', fontsize=11, color=COLOR_TEXT_LIGHT)
     ax.set_title(title, fontsize=13, color=COLOR_TEXT)
     handles, leg_labels = ax.get_legend_handles_labels()
     handles.append(plt.matplotlib.lines.Line2D([], [], color=TARGET_LINE_COLOR,
-                                               linestyle=(0, (6, 3)), linewidth=1.6))
+                                               linestyle=(0, (4, 2)), linewidth=1.8))
     leg_labels.append(f'Target {target:g}%')
     ax.legend(handles, leg_labels, loc='upper center', bbox_to_anchor=(0.5, -0.12),
               ncol=3, fontsize=11, frameon=False)
