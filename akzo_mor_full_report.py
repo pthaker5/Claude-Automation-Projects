@@ -764,6 +764,9 @@ def chart_cost_per_kg(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str
             break
     if 'BU' in sub.columns:
         sub = sub[sub['BU'].notna() & (sub['BU'].astype(str).str.strip() != '')]
+        # Per Akzo review (2026-07): leave Not Provided BU off this slide.
+        # (normalize_bu maps blanks/nulls to the literal 'Not Provided'.)
+        sub = sub[sub['BU'] != 'Not Provided']
     if 'BU' not in sub.columns or len(sub) == 0:
         # Never emit a broken <img>; show a labelled placeholder instead.
         fig, ax = plt.subplots(figsize=(6.0, 3.5))
@@ -1226,6 +1229,21 @@ def _is_expedite_mask(df: pd.DataFrame) -> pd.Series:
     return df['Priority'].astype(str).str.upper().str.startswith('EXP')
 
 
+def _expedite_ob_mask(df: pd.DataFrame) -> pd.Series:
+    """Outbound mask for the expedite slides (33-35).
+
+    Prefer the dashboard's own calculated [Type of Movement] classifier
+    (available on the full 712 billing frame; default class is Outbound), and
+    fall back to the raw-Movement-Type IB_OB for inputs that lack it.  The raw
+    column defaults unknown rows to Interplant, which silently dropped
+    expedites the Tableau dashboard counts as Outbound.
+    """
+    if 'Type of Movement (KPI)' in df.columns:
+        return (df['Type of Movement (KPI)'].astype(str).str.strip().str.lower()
+                == 'outbound')
+    return df.get('IB_OB') == 'OB'
+
+
 def _is_temp_control_mask(df: pd.DataFrame) -> pd.Series:
     """Boolean mask: True for temperature-controlled shipments (temp van, refrig,
     insulated, or PFF LTL Priority)."""
@@ -1243,8 +1261,11 @@ def _is_temp_control_mask(df: pd.DataFrame) -> pd.Series:
 def chart_expedite_count_by_bu(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str, str]) -> str:
     """Stacked expedite count by BU, 3 months.  Slide 33 left."""
     plt = _setup_matplotlib()
-    sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & (df_712.get('IB_OB') == 'OB')].copy()
+    sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
+    if 'BU' in sub.columns:
+        # Per Akzo review (2026-07): leave Not Provided BU off this slide.
+        sub = sub[sub['BU'] != 'Not Provided']
     if len(sub) == 0:
         return ''
     grp = sub.groupby(['YYYY_MM', 'BU']).size().unstack(fill_value=0)
@@ -1824,7 +1845,9 @@ def slide_tender(df_tender: pd.DataFrame, df_712: pd.DataFrame, ym_list: List[st
         # BU set comes from normalize_bu'd df_tender (run at build_full_html top)
         # so no METAL+Metal duplicates.  Dual-key BU enrichment in main() means
         # M&PC surfaces for IB tender SIDs.
-        bus_in_data = sorted(sub['BU'].dropna().unique())
+        # Per Akzo review (2026-07): leave Not Provided BU off this slide.
+        bus_in_data = sorted(b for b in sub['BU'].dropna().unique()
+                             if b != 'Not Provided')
 
         # Compute per-BU per-month metrics
         bu_rows = []
@@ -2105,8 +2128,11 @@ def slide_expedite_trends(df_712: pd.DataFrame, ym_list: List[str], labels: Dict
     """Slide 33: Expedite spending & trends."""
     chart1 = chart_expedite_count_by_bu(df_712, ym_list, labels)
 
-    sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & (df_712.get('IB_OB') == 'OB')].copy()
+    sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
+    if 'BU' in sub.columns:
+        # Per Akzo review (2026-07): leave Not Provided BU off graph AND table.
+        sub = sub[sub['BU'] != 'Not Provided']
     if len(sub) > 0 and 'BU' in sub.columns:
         cost_tbl = sub.groupby(['BU', 'YYYY_MM'])["Normalized Ship't Actual Cost"].sum().unstack(fill_value=0)
         cost_tbl = cost_tbl.reindex(columns=ym_list, fill_value=0)
@@ -2146,7 +2172,7 @@ def chart_expedite_reasons(df_712: pd.DataFrame, ym: str, labels: Dict[str, str]
     squeezed in a half-column).
     """
     plt = _setup_matplotlib()
-    sub = df_712[(df_712['YYYY_MM'] == ym) & (df_712.get('IB_OB') == 'OB')].copy()
+    sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
     if 'Priority' not in sub.columns or len(sub) == 0:
         fig, ax = plt.subplots(figsize=(6.5, 4.0))
@@ -2181,7 +2207,7 @@ def chart_expedite_carrier_pie(df_712: pd.DataFrame, ym: str, labels: Dict[str, 
     names never overlap each other outside the slice.
     """
     plt = _setup_matplotlib()
-    sub = df_712[(df_712['YYYY_MM'] == ym) & (df_712.get('IB_OB') == 'OB')].copy()
+    sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
     if 'Carrier Name' not in sub.columns or len(sub) == 0:
         fig, ax = plt.subplots(figsize=(5.8, 4.2))
@@ -2355,6 +2381,8 @@ def slide_temp_control(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[st
     sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & (df_712.get('IB_OB') == 'OB')].copy()
     count_table_html = ''
     if len(sub) > 0 and 'BU' in sub.columns:
+        # Per Akzo review (2026-07): leave Not Provided BU off this slide.
+        sub = sub[sub['BU'] != 'Not Provided'].copy()
         sub['EquipBand'] = np.where(_is_temp_control_mask(sub), 'TEMP CONTROL', 'STANDARD')
         # Shipment count per BU x EquipBand x month (each row = one shipment)
         counts = sub.groupby(['BU', 'EquipBand', 'YYYY_MM']).size().reset_index(name='n')
@@ -3444,6 +3472,8 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
         perf_df['IB_OB'] = 'OB'
     if 'IB_OB' not in df_712.columns:
         df_712['IB_OB'] = 'OB'
+    if df_712_allmoves is not None and 'IB_OB' not in df_712_allmoves.columns:
+        df_712_allmoves['IB_OB'] = 'OB'
 
     # Normalize BU values to canonical names across ALL data frames.  Live SQL
     # has mixed casing ("METAL", "Metal", "POWDER", "Powder") and some sources
@@ -3596,12 +3626,34 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
     sections.append(slide_temp_control(df_712, ym_list, labels, 31, narrative.get('temp_ctrl', {})))
 
     # 32-35. Expedite
+    # Use the FULL 712 billing frame (df_712_allmoves), not the 810-joined
+    # OB frame: the join drops expedites whose 810 event hasn't landed yet
+    # (recent months lose the most), which made the HTML undercount May/June
+    # vs the Tableau dashboard.  The OB cut happens inside the expedite
+    # helpers via _expedite_ob_mask (the dashboard's own KPI classifier).
+    df_712_exp = df_712_allmoves if df_712_allmoves is not None else df_712
+    # Reconciliation aid: print the expedite population under each basis so a
+    # residual mismatch vs the dashboard is diagnosable from the console.
+    try:
+        _e = df_712_exp[df_712_exp['YYYY_MM'].isin(ym_list)]
+        _e = _e[_is_expedite_mask(_e)]
+        _ej = df_712[df_712['YYYY_MM'].isin(ym_list)]
+        _ej = _ej[_is_expedite_mask(_ej)]
+        for _ym in ym_list:
+            _m = _e[_e['YYYY_MM'] == _ym]
+            _kpi = int(_expedite_ob_mask(_m).sum())
+            _raw = int((_m['IB_OB'] == 'OB').sum()) if 'IB_OB' in _m.columns else -1
+            _old = len(_ej[_ej['YYYY_MM'] == _ym])
+            print(f'  Expedite {_ym}: all-moves={len(_m)}  KPI-OB={_kpi} (charts use this)  '
+                  f'raw-OB={_raw}  old-810-joined-basis={_old}', flush=True)
+    except Exception as _ex:
+        print(f'  WARN: expedite diagnostic failed: {_ex}', flush=True)
     sections.append(slide_divider('Expedite Tracking Analysis', 32))
-    sections.append(slide_expedite_trends(df_712, ym_list, labels, 33, narrative.get('expedite_trends', {})))
+    sections.append(slide_expedite_trends(df_712_exp, ym_list, labels, 33, narrative.get('expedite_trends', {})))
     # Slides 34 & 35 are per-month expedite reason/carrier breakdowns
-    sections.append(slide_expedite_reason(df_712, ym_list[-2], labels, 34,
+    sections.append(slide_expedite_reason(df_712_exp, ym_list[-2], labels, 34,
                                           narrative.get('expedite_prior', {})))
-    sections.append(slide_expedite_reason(df_712, ym_list[-1], labels, 35,
+    sections.append(slide_expedite_reason(df_712_exp, ym_list[-1], labels, 35,
                                           narrative.get('expedite_report', {})))
 
     # 36-37. Conclusion / Moving As One

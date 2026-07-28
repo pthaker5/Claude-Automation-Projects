@@ -307,6 +307,34 @@ def load_from_sql(sql_start: str, sql_end: str) -> Tuple[pd.DataFrame, pd.DataFr
         print(f'  TMSCL712 matched rows: {len(df_712):,}', flush=True)
 
         # ---------------------------------------------------------------------
+        # 2b. Expedite top-up: 712 billing rows whose SID has NO 810 event.
+        #     The chunked pull above is keyed on 810 SIDs, so a recent expedite
+        #     whose 810 hasn't landed yet never enters the dataset at all and
+        #     the expedite slides undercount the newest months vs the Tableau
+        #     dashboard (which reads the 712 billing table directly).  Pull the
+        #     window's EXP* rows by the indexed Pick Up Date and add only the
+        #     SIDs that are missing.  These rows have no 810 match, so the
+        #     712-810 inner join still drops them -- perf/OTP/OTD metrics are
+        #     unaffected; only the 712-driven slides (expedite) gain rows.
+        # ---------------------------------------------------------------------
+        try:
+            df_712_exp = pd.read_sql(
+                f"SELECT {select_cols_712} "
+                f"FROM dbo.[TMSCL712_3_FI_Billing_Extract_Akzo] "
+                f"WHERE [Pick Up Date] >= '{sql_floor}' AND [Pick Up Date] <= '{sql_ceiling}' "
+                f"AND UPPER([Priority]) LIKE 'EXP%'",
+                conn
+            )
+            have_sids = set(df_712['SID'].dropna()) if len(df_712) else set()
+            df_712_exp = df_712_exp[~df_712_exp['SID'].isin(have_sids)]
+            if len(df_712_exp) > 0:
+                df_712 = pd.concat([df_712, df_712_exp], ignore_index=True)
+            print(f'  Expedite top-up (712 rows with no 810 event): +{len(df_712_exp):,}', flush=True)
+        except Exception as e:
+            print(f'  WARN: expedite top-up pull failed ({e}); expedite slides may '
+                  f'undercount recent months (SIDs whose 810 has not landed).', flush=True)
+
+        # ---------------------------------------------------------------------
         # 3. BU lookup (small, no filter needed)
         # ---------------------------------------------------------------------
         print('  Pulling BU lookup...', flush=True)
