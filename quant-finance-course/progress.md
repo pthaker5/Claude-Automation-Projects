@@ -16,13 +16,16 @@ assumed defaults. **First session: correct these, then re-cut `weekly-plan.md` i
 
 ## Current status
 
-- **Module**: 00 — Math & Probability Foundations (started, refresher-first mode)
-- **Open assignment**: warm-up set (`modules/module-00-math-probability/warmup.md`), now
-  **open-refresher**: tutor delivered a technique refresher in chat (2026-07-14); student works
-  the 8 problems with the refresher available, untimed. Grading emphasis shifts to reasoning
-  quality and oral follow-ups, since lookup is now possible.
-- **Next gate**: warm-up worked through with tutor → lesson notes + drills → Exercises 1–3 →
-  Module 00 quiz (**closed notes** — that's where recall is finally tested).
+- **Module**: 00 — Math & Probability Foundations (worked-example-first mode)
+- **Warm-up set**: student invoked "show solution" for all 8 problems without attempting
+  (2026-07-14); tutor delivered full worked solutions in chat. The set is therefore **spent as
+  an assessment** — no placement signal was collected from it.
+- **Teaching mode going forward**: worked-example-first. Tutor demonstrates techniques on
+  solved problems; active recall is reintroduced gradually via short oral reps on *fresh
+  variants* of the same techniques at the start of later sessions (warm-up question protocol,
+  CLAUDE.md §1). Fresh variants are mandatory — the original 8 are burned.
+- **Next gate**: lesson notes review → Exercises 1–3 (coding, can't be passively absorbed) →
+  Module 00 quiz (**closed notes, fresh questions** — the quiz remains the real gate).
 
 ## Warm-up interview question log
 
@@ -59,6 +62,11 @@ One per session, served before anything else; no repeats. Format:
 - **Known gap (2026-07-14)**: probability recall is dormant; retrieval-under-pressure is the
   skill to rebuild, not comprehension. Expect heavy spaced re-drilling of the same techniques
   across sessions until answers come without notes. Quiz stays closed-notes — no bar-lowering.
+- **Engagement pattern to watch (2026-07-14, blunt by design)**: student requested full
+  solutions before attempting any problem. Understandable while rusty, but if it persists past
+  the refresher phase it becomes the #1 risk to interview readiness — oral screens cannot be
+  passed by recognition. Tutor: keep sessions active (short reps, perturbed variants), and
+  raise this directly if the pattern holds at the Module 00 quiz.
 
 ## Configurations-tried counters (multiple-testing honesty, per project)
 
