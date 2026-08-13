@@ -7,6 +7,12 @@ REM     - Drop the fresh Claims twbx in this folder:
 REM         Claims and Complaints*.twbx
 REM       (Tender data is now pulled directly from CL709 SQL --
 REM        no more Tender twbx unpacking needed.)
+REM     - If IT group policy blocks the Tableau Hyper engine
+REM       ("hyperd.exe ... blocked by group policy"), export the claims
+REM       data from the Tableau dashboard to CSV or XLSX instead and drop
+REM       it here as Claims*.csv / Claims*.xlsx -- it takes priority over
+REM       the twbx and needs no Hyper engine.  Delete the CSV once IT
+REM       unblocks hyperd so the twbx flow resumes.
 REM     - (Optional) Edit narrative_<YYYY-MM>.yaml for this month's prose
 REM         (if no narrative file exists, narrative_example.yaml is used)
 REM     - Double-click this .bat
@@ -38,19 +44,27 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM --- Auto-unpack Claims .twbx if its hyper extract is missing ---
-call :unpack_twbx "Claims and Complaints Dashboard*.twbx" claims_unpacked
-
-REM --- Locate the Claims hyper file ---
-set CLAIMS_HYPER=
-for /f "delims=" %%f in ('dir /b /s /o-s "claims_unpacked\*.hyper" 2^>nul') do (
-    if "!CLAIMS_HYPER!"=="" set CLAIMS_HYPER=%%f
+REM --- Locate the Claims data source ---
+REM     A CSV/XLSX export takes priority: it works even when IT policy blocks
+REM     the Tableau Hyper engine.  Otherwise unpack the twbx and use its hyper.
+set CLAIMS_SRC=
+for /f "delims=" %%f in ('dir /b "Claims*.csv" "Claims*.xlsx" 2^>nul') do (
+    if "!CLAIMS_SRC!"=="" set "CLAIMS_SRC=%%~ff"
 )
-if "!CLAIMS_HYPER!"=="" (
-    echo ERROR: No claims .hyper file found.  Did the unpack fail?
-    pause & exit /b 1
+if not "!CLAIMS_SRC!"=="" (
+    echo Claims data:  !CLAIMS_SRC!  -- CSV/XLSX export, Hyper engine not needed
+) else (
+    call :unpack_twbx "Claims and Complaints Dashboard*.twbx" claims_unpacked
+    for /f "delims=" %%f in ('dir /b /s /o-s "claims_unpacked\*.hyper" 2^>nul') do (
+        if "!CLAIMS_SRC!"=="" set "CLAIMS_SRC=%%f"
+    )
+    if "!CLAIMS_SRC!"=="" (
+        echo ERROR: No claims data found.  Drop the Claims twbx here, or a
+        echo        Claims*.csv / Claims*.xlsx export from the Tableau dashboard.
+        pause & exit /b 1
+    )
+    echo Claims data:  !CLAIMS_SRC!
 )
-echo Claims hyper: !CLAIMS_HYPER!
 
 REM --- Pick the narrative file: prefer month-specific, fall back to default ---
 set NARRATIVE_ARG=
@@ -72,7 +86,7 @@ echo.
 echo ----- Running report generator -----
 python akzo_mor_full_report.py ^
     --report-month !REPORT_MONTH! ^
-    --claims-hyper "!CLAIMS_HYPER!" ^
+    --claims-hyper "!CLAIMS_SRC!" ^
     --output-dir reports ^
     !NARRATIVE_ARG!
 

@@ -297,32 +297,52 @@ def load_claims_data(hyper_path: str) -> pd.DataFrame:
     (the raw Reported Date column is stored as Excel serial -- the dashboard
     derives the YY-MM upstream).
     """
-    import pantab, zipfile, tempfile, os, shutil
+    import zipfile, tempfile, os, shutil
 
-    load_path = hyper_path
-    tmp_dir = None
+    lower = hyper_path.lower()
+    # CSV / Excel export path: no Hyper engine needed.  This is the fallback
+    # for machines where IT group policy blocks pantab's bundled hyperd.exe
+    # ("This program is blocked by group policy") -- export the claims data
+    # from the Tableau dashboard to CSV/XLSX and pass that file instead.
+    if lower.endswith(('.csv', '.xlsx', '.xls')):
+        print(f'Loading Claims export (no Hyper engine needed): {hyper_path}', flush=True)
+        if lower.endswith('.csv'):
+            try:
+                df_claims = pd.read_csv(hyper_path)
+                if df_claims.shape[1] <= 1:
+                    # Tableau "Download Crosstab" CSVs are UTF-16 + tab-separated
+                    df_claims = pd.read_csv(hyper_path, encoding='utf-16', sep='\t')
+            except UnicodeDecodeError:
+                df_claims = pd.read_csv(hyper_path, encoding='utf-16', sep='\t')
+        else:
+            df_claims = pd.read_excel(hyper_path)
+    else:
+        import pantab
 
-    if hyper_path.lower().endswith('.twbx'):
-        print(f'Unpacking .twbx: {hyper_path}', flush=True)
-        with zipfile.ZipFile(hyper_path) as z:
-            hyper_names = [n for n in z.namelist() if n.endswith('.hyper')]
-            if not hyper_names:
-                raise ValueError(f'No .hyper file found inside {hyper_path}')
-            # Use the largest hyper if there are multiple
-            hyper_name = max(hyper_names, key=lambda n: z.getinfo(n).file_size)
-            tmp_dir = tempfile.mkdtemp()
-            load_path = os.path.join(tmp_dir, 'extract.hyper')
-            with z.open(hyper_name) as src, open(load_path, 'wb') as dst:
-                shutil.copyfileobj(src, dst)
-            print(f'  Extracted: {hyper_name} ({os.path.getsize(load_path):,} bytes)', flush=True)
+        load_path = hyper_path
+        tmp_dir = None
 
-    print(f'Loading Claims hyper: {load_path}', flush=True)
-    try:
-        frames = pantab.frames_from_hyper(load_path)
-    finally:
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-    df_claims = list(frames.values())[0].copy()
+        if lower.endswith('.twbx'):
+            print(f'Unpacking .twbx: {hyper_path}', flush=True)
+            with zipfile.ZipFile(hyper_path) as z:
+                hyper_names = [n for n in z.namelist() if n.endswith('.hyper')]
+                if not hyper_names:
+                    raise ValueError(f'No .hyper file found inside {hyper_path}')
+                # Use the largest hyper if there are multiple
+                hyper_name = max(hyper_names, key=lambda n: z.getinfo(n).file_size)
+                tmp_dir = tempfile.mkdtemp()
+                load_path = os.path.join(tmp_dir, 'extract.hyper')
+                with z.open(hyper_name) as src, open(load_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+                print(f'  Extracted: {hyper_name} ({os.path.getsize(load_path):,} bytes)', flush=True)
+
+        print(f'Loading Claims hyper: {load_path}', flush=True)
+        try:
+            frames = pantab.frames_from_hyper(load_path)
+        finally:
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        df_claims = list(frames.values())[0].copy()
     print(f'  Claims columns: {list(df_claims.columns)[:25]}', flush=True)
     # Normalize YY-MM: source has 2026-1 not 2026-01, so re-format
     def _norm_ymm(s):
@@ -4746,7 +4766,26 @@ def main():
         if df_tender is not None:
             print(f'Tender data: {len(df_tender):,} rows from hyper extract (legacy path)')
 
-    df_claims = load_claims_data(args.claims_hyper) if args.claims_hyper else None
+    df_claims = None
+    if args.claims_hyper:
+        try:
+            df_claims = load_claims_data(args.claims_hyper)
+        except Exception as e:
+            # Do NOT kill the whole report over the (optional) claims input --
+            # generate everything else and let slides 27-28 fall back to
+            # manual placeholders.
+            print('=' * 60, flush=True)
+            print(f'WARN: claims data could not be loaded: {e}', flush=True)
+            if 'group policy' in str(e).lower() or 'Hyper instance' in str(e):
+                print('  Windows group policy blocked the Tableau Hyper engine '
+                      '(hyperd.exe inside the pantab package).', flush=True)
+                print('  Options:', flush=True)
+                print('   1) Ask IT to whitelist hyperd.exe at the path shown above, or', flush=True)
+                print('   2) Export the claims data from the Tableau dashboard to CSV/XLSX,', flush=True)
+                print('      drop it in this folder (e.g. "Claims and Complaints.csv"),', flush=True)
+                print('      and re-run -- no Hyper engine is needed for CSV/XLSX.', flush=True)
+            print('  Continuing WITHOUT claims -- slides 27-28 will be manual placeholders.', flush=True)
+            print('=' * 60, flush=True)
     if df_claims is None:
         # Auto-detect a claims extract in the working / output dir if not passed.
         import glob as _glob
@@ -4754,16 +4793,27 @@ def main():
                        Path.home() / 'Downloads', Path('/mnt/user-data/uploads')]
         cand = []
         for d in search_dirs:
-            for pat in ['*laim*.twbx', '*laim*.hyper', '*omplaint*.twbx', '*omplaint*.hyper']:
+            for pat in ['*laim*.twbx', '*laim*.hyper', '*omplaint*.twbx', '*omplaint*.hyper',
+                        '*laim*.csv', '*laim*.xlsx', '*omplaint*.csv', '*omplaint*.xlsx']:
                 cand += _glob.glob(str(Path(d) / pat))
         cand = [p for p in cand if not os.path.basename(p).startswith('~$')]
+        # Don't retry the exact path that already failed above.
+        if args.claims_hyper:
+            _failed = os.path.abspath(args.claims_hyper)
+            cand = [p for p in cand if os.path.abspath(p) != _failed]
         cand = sorted(set(cand), key=lambda p: os.path.getmtime(p), reverse=True)
         if cand:
-            print(f'Auto-detected claims extract: {cand[0]}', flush=True)
-            try:
-                df_claims = load_claims_data(cand[0])
-            except Exception as e:
-                print(f'WARN: claims auto-load failed ({e}); claims slides will be skipped.', flush=True)
+            # Try candidates newest-first until one loads (e.g. the twbx fails
+            # because hyperd.exe is blocked, but a CSV export loads fine).
+            for _c in cand:
+                print(f'Auto-detected claims source: {_c}', flush=True)
+                try:
+                    df_claims = load_claims_data(_c)
+                    break
+                except Exception as e:
+                    print(f'WARN: claims auto-load failed ({e}); trying next candidate.', flush=True)
+            if df_claims is None:
+                print('WARN: no claims candidate loaded; claims slides will be skipped.', flush=True)
         else:
             print('No claims extract passed or found; claims slides will be skipped. '
                   '(pass --claims-hyper to include them)', flush=True)
