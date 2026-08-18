@@ -1,0 +1,90 @@
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create deployment package
+        run: |
+          zip -r deploy.zip \
+            app.py sql_client.py requirements.txt startup.txt \
+            static/ templates/ \
+            -x "*.pyc" "__pycache__/*" ".env" ".env.*" "*.sh" "data/*"
+          echo "=== zip contents ==="
+          unzip -l deploy.zip
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Ensure Oryx build ON at startup (deps install on boot, not deploy)
+        run: |
+          RG=$(az webapp list --query "[?name=='DCE-billing-audit'].resourceGroup" -o tsv)
+          echo "Resource group: $RG"
+          az webapp config appsettings set --name DCE-billing-audit --resource-group "$RG" \
+            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true WEBSITE_RUN_FROM_PACKAGE=0 \
+            || echo "WARN: could not set app settings (SP may lack permission) — continuing"
+
+      - name: Deploy to Azure Web App (zip deploy, no build in this step)
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: DCE-billing-audit
+          package: deploy.zip
+          type: zip
+          clean: true
+          restart: true
+
+      - name: Force fresh Oryx extraction (stop/start, NOT restart)
+        run: |
+          # az webapp restart does NOT force Oryx re-extraction on the Python
+          # Linux image: the new output lands in /home/site/wwwroot but the
+          # running gunicorn keeps serving previously-extracted /tmp/<hash>
+          # code. Symptom: /api returns new JSON but templates render old HTML.
+          # stop -> sleep -> start forces a fresh extraction. (Verified 2026-06-25.)
+          RG=$(az webapp list --query "[?name=='DCE-billing-audit'].resourceGroup" -o tsv)
+          echo "Resource group: $RG"
+          az webapp stop  --name DCE-billing-audit --resource-group "$RG"
+          echo "Stopped. Waiting 10s..."
+          sleep 10
+          az webapp start --name DCE-billing-audit --resource-group "$RG"
+          echo "Started. Waiting 75s for gunicorn cold-boot..."
+          sleep 75
+
+      - name: Verify new HTML is live (grep version out of the dashboard)
+        run: |
+          # Probe the actual dashboard HTML, not an /api route. /api returns
+          # fresh JSON even when templates are stale (that is the failure mode),
+          # so an /api probe gives false confidence. Grep the deployed version
+          # string out of the served HTML instead.
+          EXPECTED="v1.16.5"
+          URL="https://dce-billing-audit.azurewebsites.net/static/billing_audit.html"
+          echo "Probing $URL for $EXPECTED"
+          ok=0
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/resp.html -w "%{http_code}" "$URL" || echo "000")
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ] && grep -q "$EXPECTED" /tmp/resp.html; then
+              echo "NEW HTML IS LIVE ($EXPECTED found in served dashboard)"; ok=1; break
+            fi
+            if [ "$code" = "200" ]; then
+              echo "200 but $EXPECTED NOT in HTML -> still serving stale template"
+            fi
+            sleep 20
+          done
+          if [ "$ok" != "1" ]; then
+            echo "WARNING: could not confirm $EXPECTED live. If HTTP was 200 but version missing, it is the Oryx cache (stale /tmp extraction). A 401/302 usually means Easy Auth gate on the static path."
+            head -c 400 /tmp/resp.html || true
+          fi
+
+      - name: Azure Logout
+        if: always()
+        run: az logout
