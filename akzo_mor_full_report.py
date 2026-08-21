@@ -3452,7 +3452,8 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
                     narrative: Dict,
                     market_pptx_path: Optional[str] = None,
                     perf_df_all_moves: Optional[pd.DataFrame] = None,
-                    df_712_allmoves: Optional[pd.DataFrame] = None) -> str:
+                    df_712_allmoves: Optional[pd.DataFrame] = None,
+                    gen_info: str = '') -> str:
     """Assemble the full MOR-style HTML report."""
     # OTP/OTD slides count all movement types; fall back to perf_df if the
     # all-moves frame wasn't supplied (keeps older callers working).
@@ -3835,6 +3836,9 @@ body.present-mode .present-nav {{ display: flex; }}
 </style>
 </head>
 <body>
+<!--GEN-INFO
+{gen_info.replace('--', '~')}
+GEN-INFO-->
 {''.join(sections)}
 <div class="mor-nav" id="morNav">
   <button id="navPrev" title="Previous (←)">&larr;</button>
@@ -4703,22 +4707,35 @@ def main():
 
     # One-off manual adjustments (confirmed-with-carrier corrections for THIS
     # report month only -- see load_manual_adjustments docstring).
+    # gen_notes: generation fingerprint embedded in the HTML (as a comment) and
+    # written to reports/adjustments_log_<month>.txt -- so a delivered report
+    # carries its own diagnosis even when the console is gone.
+    gen_notes = [f'generator build 2026-08-21 | report month {report_ym}']
     _adj = load_manual_adjustments(args.adjustments, report_ym)
-    if _adj is not None:
+    if _adj is None:
+        gen_notes.append(f'adjustments: NONE loaded (no --adjustments arg and no '
+                         f'manual_adjustments_{report_ym}.csv found in {Path.cwd()})')
+    else:
+        gen_notes.append(f"adjustments: {len(_adj)} SIDs loaded "
+                         f"({int((_adj['Action'] == 'exclude').sum())} exclude, "
+                         f"{int((_adj['Action'] == 'otp').sum())} otp, "
+                         f"{int((_adj['Action'] == 'otd').sum())} otd)")
         _present = set(_norm_sids(perf_df_all_moves['SID'])) \
             if 'SID' in perf_df_all_moves.columns else set()
         _wanted = set(_adj['SID_norm'])
         _unmatched = sorted(_wanted - _present)
         if _unmatched:
-            print(f'  NOTE: {len(_unmatched)} of {len(_wanted)} adjustment SIDs not in the '
-                  f'dataset (already carrier-excluded, or absent): '
-                  f'{", ".join(_unmatched[:12])}{" ..." if len(_unmatched) > 12 else ""}',
-                  flush=True)
+            _note = (f'{len(_unmatched)} of {len(_wanted)} adjustment SIDs not in the '
+                     f'dataset (already carrier-excluded, or absent): '
+                     f'{", ".join(_unmatched[:12])}{" ..." if len(_unmatched) > 12 else ""}')
+            print(f'  NOTE: {_note}', flush=True)
+            gen_notes.append('adjustments: ' + _note)
             if _present and len(_unmatched) > 0.3 * len(_wanted):
                 _sample = sorted(_present)[:8]
-                print(f'  HINT: >30% of adjustment SIDs are missing.  If that looks wrong, '
-                      f'compare SID formats -- dataset SIDs look like: '
-                      f'{", ".join(_sample)}', flush=True)
+                _hint = (f'>30% of adjustment SIDs are missing.  If that looks wrong, '
+                         f'compare SID formats -- dataset SIDs look like: {", ".join(_sample)}')
+                print(f'  HINT: {_hint}', flush=True)
+                gen_notes.append('adjustments: ' + _hint)
         _before = _otp_otd_snapshot(perf_df_all_moves, ym_list)
         perf_df = apply_manual_adjustments(perf_df, _adj, 'outbound frame')
         perf_df_all_moves = apply_manual_adjustments(perf_df_all_moves, _adj, 'all-moves frame')
@@ -4729,8 +4746,10 @@ def main():
         for k in _before:
             b, a = _before[k], _after.get(k, (None, None))
             marker = '' if (b == a) else '   <-- changed'
-            print(f'    {k:<20} OTP {_fmt(b[0])} -> {_fmt(a[0])}   '
-                  f'OTD {_fmt(b[1])} -> {_fmt(a[1])}{marker}', flush=True)
+            _line = (f'{k:<20} OTP {_fmt(b[0])} -> {_fmt(a[0])}   '
+                     f'OTD {_fmt(b[1])} -> {_fmt(a[1])}{marker}')
+            print(f'    {_line}', flush=True)
+            gen_notes.append('impact: ' + _line)
 
     # The perf_df has 810-side data with SA flags + Mode + YYYY_MM.  For the
     # 712-driven sections (weight, cost, expedite) we need 712 directly --
@@ -5030,13 +5049,27 @@ def main():
 
     narrative = load_narrative(args.narrative)
 
+    if df_claims is not None and 'YYYY_MM' in df_claims.columns:
+        _cm = sorted(str(m) for m in set(df_claims['YYYY_MM'].dropna()) if str(m).strip())
+        gen_notes.append(f'claims: {len(df_claims)} rows, months {", ".join(_cm[-6:])}')
+    else:
+        gen_notes.append('claims: none loaded')
+
+    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    # Sidecar diagnostics file -- same content as the HTML's GEN-INFO comment.
+    _log_path = out_dir / f'adjustments_log_{report_ym}.txt'
+    try:
+        _log_path.write_text('\n'.join(gen_notes) + '\n', encoding='utf-8')
+        print(f'Diagnostics written: {_log_path}', flush=True)
+    except Exception as _e:
+        print(f'WARN: could not write {_log_path}: {_e}', flush=True)
+
     html = build_full_html(perf_df, df_712, df_tender, df_claims,
                             ym_list, labels, report_ym, narrative,
                             market_pptx_path=market_path,
                             perf_df_all_moves=perf_df_all_moves,
-                            df_712_allmoves=df_712_allmoves)
-
-    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+                            df_712_allmoves=df_712_allmoves,
+                            gen_info='\n'.join(gen_notes))
     out_file = out_dir / f'Akzo_MOR_Full_{report_ym}.html'
     out_file.write_text(html, encoding='utf-8')
     print(f'Report saved: {out_file}')
