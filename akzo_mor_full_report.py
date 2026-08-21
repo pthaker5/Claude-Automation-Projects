@@ -4483,6 +4483,39 @@ section.mor-hidden > .mor-hidden-label {{ display:inline-block; font-size:13px;
 # =============================================================================
 # 9. CLI
 # =============================================================================
+def _norm_sids(s: pd.Series) -> pd.Series:
+    """Normalize SIDs for matching: trim, uppercase, drop a float-cast '.0'
+    tail, strip leading zeros ('0001575520' == '1575520' == '1575520.0')."""
+    out = s.astype(str).str.strip().str.upper()
+    out = out.str.replace(r'\.0+$', '', regex=True)
+    return out.str.lstrip('0')
+
+
+def _otp_otd_snapshot(df: pd.DataFrame, ym_list: List[str]) -> Dict[str, tuple]:
+    """Per-month/mode OTP & OTD (count-based, distinct IDs -- mirrors the
+    Late-vs-OnTime count charts).  Used to print the before/after impact of
+    manual adjustments so 'nothing changed' is visible at the console."""
+    out = {}
+    if df is None or len(df) == 0 or 'SID' not in df.columns:
+        return out
+    key_pu = 'Key ShipperSID' if 'Key ShipperSID' in df.columns else 'SID'
+    for ym in ym_list:
+        for mode in ['LTL', 'Truckload']:
+            sub = df[(df.get('YYYY_MM') == ym) & (df.get('Mode') == mode)]
+            if len(sub) == 0:
+                continue
+
+            def _share(late_col, key):
+                if late_col not in sub.columns:
+                    return None
+                ot = sub[sub[late_col] == 0][key].nunique()
+                late = sub[sub[late_col] == 1][key].nunique()
+                return (ot / (ot + late) * 100) if (ot + late) else None
+
+            out[f'{ym} {mode}'] = (_share('SA_PU_Late', key_pu), _share('SA_Del_Late', 'SID'))
+    return out
+
+
 def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Optional[pd.DataFrame]:
     """One-off, month-scoped SID adjustments -- NOT a permanent logic change.
 
@@ -4508,8 +4541,13 @@ def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Opt
     cands += [Path.cwd() / fname, Path(__file__).parent / fname]
     path = next((p for p in cands if p.exists()), None)
     if path is None:
+        # ALWAYS say so -- a silently-skipped adjustments file looks exactly
+        # like "the adjustments did nothing" and is undiagnosable from the deck.
         if explicit_path:
             print(f'WARN: adjustments file not found: {explicit_path}', flush=True)
+        else:
+            print(f'Manual adjustments: NONE -- no {fname} found in '
+                  f'{Path.cwd()} or {Path(__file__).parent.resolve()}', flush=True)
         return None
     adj = pd.read_csv(path, dtype=str)
     cols = {c.lower().strip(): c for c in adj.columns}
@@ -4517,7 +4555,7 @@ def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Opt
         print(f'WARN: adjustments file {path} must have SID and Action columns; ignored.', flush=True)
         return None
     adj = adj.rename(columns={cols['sid']: 'SID', cols['action']: 'Action'})
-    adj['SID_norm'] = adj['SID'].astype(str).str.strip().str.upper().str.lstrip('0')
+    adj['SID_norm'] = _norm_sids(adj['SID'])
     adj['Action'] = adj['Action'].astype(str).str.strip().str.lower()
     bad = sorted(set(adj.loc[~adj['Action'].isin(['exclude', 'otp', 'otd']), 'Action']))
     if bad:
@@ -4534,7 +4572,7 @@ def apply_manual_adjustments(df: pd.DataFrame, adj: pd.DataFrame, label: str) ->
     """Apply load_manual_adjustments() output to one performance frame."""
     if df is None or len(df) == 0 or 'SID' not in df.columns:
         return df
-    sid_norm = df['SID'].astype(str).str.strip().str.upper().str.lstrip('0')
+    sid_norm = _norm_sids(df['SID'])
     excl = set(adj.loc[adj['Action'] == 'exclude', 'SID_norm'])
     otp = set(adj.loc[adj['Action'] == 'otp', 'SID_norm'])
     otd = set(adj.loc[adj['Action'] == 'otd', 'SID_norm'])
@@ -4638,7 +4676,7 @@ def main():
     args = parser.parse_args()
 
     print('=' * 60, flush=True)
-    print('  Akzo MOR Full Report Generator  --  build 2026-07-21', flush=True)
+    print('  Akzo MOR Full Report Generator  --  build 2026-08-21', flush=True)
     print('=' * 60, flush=True)
 
     perf_mod = _import_perf_module()
@@ -4667,16 +4705,32 @@ def main():
     # report month only -- see load_manual_adjustments docstring).
     _adj = load_manual_adjustments(args.adjustments, report_ym)
     if _adj is not None:
-        _present = set(perf_df_all_moves['SID'].astype(str).str.strip()
-                       .str.upper().str.lstrip('0')) if 'SID' in perf_df_all_moves.columns else set()
-        _unmatched = sorted(set(_adj['SID_norm']) - _present)
+        _present = set(_norm_sids(perf_df_all_moves['SID'])) \
+            if 'SID' in perf_df_all_moves.columns else set()
+        _wanted = set(_adj['SID_norm'])
+        _unmatched = sorted(_wanted - _present)
         if _unmatched:
-            print(f'  NOTE: {len(_unmatched)} adjustment SIDs not in the dataset '
-                  f'(already carrier-excluded, or absent): '
+            print(f'  NOTE: {len(_unmatched)} of {len(_wanted)} adjustment SIDs not in the '
+                  f'dataset (already carrier-excluded, or absent): '
                   f'{", ".join(_unmatched[:12])}{" ..." if len(_unmatched) > 12 else ""}',
                   flush=True)
+            if _present and len(_unmatched) > 0.3 * len(_wanted):
+                _sample = sorted(_present)[:8]
+                print(f'  HINT: >30% of adjustment SIDs are missing.  If that looks wrong, '
+                      f'compare SID formats -- dataset SIDs look like: '
+                      f'{", ".join(_sample)}', flush=True)
+        _before = _otp_otd_snapshot(perf_df_all_moves, ym_list)
         perf_df = apply_manual_adjustments(perf_df, _adj, 'outbound frame')
         perf_df_all_moves = apply_manual_adjustments(perf_df_all_moves, _adj, 'all-moves frame')
+        _after = _otp_otd_snapshot(perf_df_all_moves, ym_list)
+        # Show the effect right in the console so "nothing changed" can't hide.
+        print('  OTP/OTD impact of manual adjustments (count-based, all-moves):', flush=True)
+        _fmt = lambda v: f'{v:6.2f}%' if v is not None else '   n/a'
+        for k in _before:
+            b, a = _before[k], _after.get(k, (None, None))
+            marker = '' if (b == a) else '   <-- changed'
+            print(f'    {k:<20} OTP {_fmt(b[0])} -> {_fmt(a[0])}   '
+                  f'OTD {_fmt(b[1])} -> {_fmt(a[1])}{marker}', flush=True)
 
     # The perf_df has 810-side data with SA flags + Mode + YYYY_MM.  For the
     # 712-driven sections (weight, cost, expedite) we need 712 directly --

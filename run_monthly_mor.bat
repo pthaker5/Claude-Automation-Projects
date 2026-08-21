@@ -78,6 +78,13 @@ if exist "narrative_!REPORT_MONTH!.yaml" (
     echo Narrative:    (auto-detect from script folder)
 )
 
+REM --- Report the one-off SID adjustments file, if present ---
+if exist "manual_adjustments_!REPORT_MONTH!.csv" (
+    echo Adjustments:  manual_adjustments_!REPORT_MONTH!.csv
+) else (
+    echo Adjustments:  none for !REPORT_MONTH! -- computed numbers only
+)
+
 REM --- Ensure output folder exists ---
 if not exist "reports" mkdir reports
 
