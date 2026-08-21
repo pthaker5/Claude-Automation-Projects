@@ -4545,6 +4545,16 @@ def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Opt
     cands += [Path.cwd() / fname, Path(__file__).parent / fname]
     path = next((p for p in cands if p.exists()), None)
     if path is None:
+        # Tolerate browser-download renames ("manual_adjustments_2026-07 (1).csv",
+        # "abc123-manual_adjustments_2026-07.csv") -- loose match, newest wins.
+        import glob as _glob
+        loose = []
+        for d in {Path.cwd(), Path(__file__).parent}:
+            loose += _glob.glob(str(d / f'*manual_adjustments*{report_ym}*.csv'))
+        if loose:
+            path = Path(max(loose, key=lambda p: Path(p).stat().st_mtime))
+            print(f'Manual adjustments: exact filename not found; using {path.name}', flush=True)
+    if path is None:
         # ALWAYS say so -- a silently-skipped adjustments file looks exactly
         # like "the adjustments did nothing" and is undiagnosable from the deck.
         if explicit_path:

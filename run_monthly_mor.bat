@@ -79,10 +79,17 @@ if exist "narrative_!REPORT_MONTH!.yaml" (
 )
 
 REM --- Report the one-off SID adjustments file, if present ---
-if exist "manual_adjustments_!REPORT_MONTH!.csv" (
-    echo Adjustments:  manual_adjustments_!REPORT_MONTH!.csv
+REM     Loose match tolerates browser-download renames like "... (1).csv".
+set ADJ_FILE=
+for /f "delims=" %%f in ('dir /b "*manual_adjustments*!REPORT_MONTH!*.csv" 2^>nul') do (
+    if "!ADJ_FILE!"=="" set "ADJ_FILE=%%f"
+)
+if not "!ADJ_FILE!"=="" (
+    echo Adjustments:  !ADJ_FILE!
 ) else (
     echo Adjustments:  none for !REPORT_MONTH! -- computed numbers only
+    echo               To apply the ops exception corrections, put
+    echo               manual_adjustments_!REPORT_MONTH!.csv in THIS folder.
 )
 
 REM --- Ensure output folder exists ---
