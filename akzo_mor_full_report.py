@@ -4546,14 +4546,27 @@ def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Opt
     path = next((p for p in cands if p.exists()), None)
     if path is None:
         # Tolerate browser-download renames ("manual_adjustments_2026-07 (1).csv",
-        # "abc123-manual_adjustments_2026-07.csv") -- loose match, newest wins.
+        # "abc123-manual_adjustments_2026-07.csv") and month-format drift
+        # ("...202607.csv", "...2026_07.csv") -- loose match, newest wins.
         import glob as _glob
+        ym_variants = {report_ym, report_ym.replace('-', ''), report_ym.replace('-', '_')}
         loose = []
         for d in {Path.cwd(), Path(__file__).parent}:
-            loose += _glob.glob(str(d / f'*manual_adjustments*{report_ym}*.csv'))
+            for v in ym_variants:
+                loose += _glob.glob(str(d / f'*manual_adjustments*{v}*.csv'))
         if loose:
-            path = Path(max(loose, key=lambda p: Path(p).stat().st_mtime))
+            path = Path(max(set(loose), key=lambda p: Path(p).stat().st_mtime))
             print(f'Manual adjustments: exact filename not found; using {path.name}', flush=True)
+    if path is None:
+        # Point at near-miss files so a wrong month / typo'd name is obvious.
+        import glob as _glob
+        near = []
+        for d in {Path.cwd(), Path(__file__).parent}:
+            near += _glob.glob(str(d / '*manual_adjustments*.csv'))
+        if near:
+            print(f'WARN: found adjustment-like file(s) that do NOT match report month '
+                  f'{report_ym}: {", ".join(sorted(set(Path(p).name for p in near)))} '
+                  f'-- rename to manual_adjustments_{report_ym}.csv to apply.', flush=True)
     if path is None:
         # ALWAYS say so -- a silently-skipped adjustments file looks exactly
         # like "the adjustments did nothing" and is undiagnosable from the deck.

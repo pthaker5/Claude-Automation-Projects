@@ -79,9 +79,11 @@ if exist "narrative_!REPORT_MONTH!.yaml" (
 )
 
 REM --- Report the one-off SID adjustments file, if present ---
-REM     Loose match tolerates browser-download renames like "... (1).csv".
+REM     Loose match tolerates browser-download renames like "... (1).csv"
+REM     and a missing hyphen in the month (202607 vs 2026-07).
+set "YM_NODASH=!REPORT_MONTH:-=!"
 set ADJ_FILE=
-for /f "delims=" %%f in ('dir /b "*manual_adjustments*!REPORT_MONTH!*.csv" 2^>nul') do (
+for /f "delims=" %%f in ('dir /b "*manual_adjustments*!REPORT_MONTH!*.csv" "*manual_adjustments*!YM_NODASH!*.csv" 2^>nul') do (
     if "!ADJ_FILE!"=="" set "ADJ_FILE=%%f"
 )
 if not "!ADJ_FILE!"=="" (
