@@ -297,7 +297,7 @@ def load_claims_data(hyper_path: str) -> pd.DataFrame:
     (the raw Reported Date column is stored as Excel serial -- the dashboard
     derives the YY-MM upstream).
     """
-    import zipfile, tempfile, os, shutil
+    import zipfile, tempfile, os, shutil, re
 
     lower = hyper_path.lower()
     # CSV / Excel export path: no Hyper engine needed.  This is the fallback
@@ -344,14 +344,41 @@ def load_claims_data(hyper_path: str) -> pd.DataFrame:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         df_claims = list(frames.values())[0].copy()
     print(f'  Claims columns: {list(df_claims.columns)[:25]}', flush=True)
-    # Normalize YY-MM: source has 2026-1 not 2026-01, so re-format
+    # Normalize the month value to 'YYYY-MM'.  The hyper extract has '2026-1',
+    # but CSV/XLSX exports come in many shapes -- 'Jul-26', 'July 2026',
+    # '26-Jul', '7/2026', real datetimes -- and an unrecognized format left
+    # YYYY_MM unmatched, which rendered the claims slides completely empty.
+    _MON = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+
     def _norm_ymm(s):
         if pd.isna(s):
             return ''
-        parts = str(s).split('-')
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            return f'{parts[0]}-{int(parts[1]):02d}'
-        return str(s)
+        if isinstance(s, (pd.Timestamp, datetime)):
+            return f'{s.year:04d}-{s.month:02d}'
+        raw = str(s).strip()
+        if not raw:
+            return ''
+        def _year(y):
+            y = int(y)
+            return y + 2000 if y < 100 else y
+        parts = re.split(r'[-/\s]+', raw)
+        if len(parts) == 2:
+            a, b = parts
+            if a.isdigit() and b.isdigit():
+                ai, bi = int(a), int(b)
+                if 1 <= bi <= 12:                    # '2026-7', '26-07'
+                    return f'{_year(ai):04d}-{bi:02d}'
+                if 1 <= ai <= 12:                    # '7/2026'
+                    return f'{_year(bi):04d}-{ai:02d}'
+            if a[:3].lower() in _MON and b.isdigit():    # 'Jul-26', 'July 2026'
+                return f'{_year(int(b)):04d}-{_MON[a[:3].lower()]:02d}'
+            if b[:3].lower() in _MON and a.isdigit():    # '26-Jul'
+                return f'{_year(int(a)):04d}-{_MON[b[:3].lower()]:02d}'
+        dt = pd.to_datetime(raw, errors='coerce')
+        if pd.notna(dt):
+            return f'{dt.year:04d}-{dt.month:02d}'
+        return raw  # unparseable: pass through so it shows in the months-present print
     # Prefer the dashboard's precomputed month column, but fall back to deriving
     # it from any reported-date column if that exact name isn't present -- the
     # claims extract's column names vary, and a hard KeyError here would zero
@@ -4456,6 +4483,79 @@ section.mor-hidden > .mor-hidden-label {{ display:inline-block; font-size:13px;
 # =============================================================================
 # 9. CLI
 # =============================================================================
+def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Optional[pd.DataFrame]:
+    """One-off, month-scoped SID adjustments -- NOT a permanent logic change.
+
+    Used for exception SIDs that ops confirms with carriers after the data is
+    cut (e.g. "these orders did pick up on time" / "exclude these disputed
+    orders").  Reads --adjustments PATH if given, otherwise looks for
+    manual_adjustments_<report-month>.csv (e.g. manual_adjustments_2026-07.csv)
+    next to the script / in the working dir.  Because the filename carries the
+    report month, it applies to that month's run only -- delete the file (or
+    just don't create one next month) and the report is back to purely
+    computed numbers.
+
+    CSV columns: SID, Action[, Note]
+        exclude -> drop the SID's rows from the performance frames entirely
+        otp     -> force the SID's pickup On Time  (SA_PU_OT=1, SA_PU_Late=0)
+        otd     -> force the SID's delivery On Time (SA_Del_OT=1, SA_Del_Late=0)
+    SID matching ignores leading zeros ('0001575520' matches '1575520').
+    """
+    cands = []
+    if explicit_path:
+        cands.append(Path(explicit_path))
+    fname = f'manual_adjustments_{report_ym}.csv'
+    cands += [Path.cwd() / fname, Path(__file__).parent / fname]
+    path = next((p for p in cands if p.exists()), None)
+    if path is None:
+        if explicit_path:
+            print(f'WARN: adjustments file not found: {explicit_path}', flush=True)
+        return None
+    adj = pd.read_csv(path, dtype=str)
+    cols = {c.lower().strip(): c for c in adj.columns}
+    if 'sid' not in cols or 'action' not in cols:
+        print(f'WARN: adjustments file {path} must have SID and Action columns; ignored.', flush=True)
+        return None
+    adj = adj.rename(columns={cols['sid']: 'SID', cols['action']: 'Action'})
+    adj['SID_norm'] = adj['SID'].astype(str).str.strip().str.upper().str.lstrip('0')
+    adj['Action'] = adj['Action'].astype(str).str.strip().str.lower()
+    bad = sorted(set(adj.loc[~adj['Action'].isin(['exclude', 'otp', 'otd']), 'Action']))
+    if bad:
+        print(f'WARN: unknown adjustment actions ignored: {bad}', flush=True)
+        adj = adj[adj['Action'].isin(['exclude', 'otp', 'otd'])]
+    print(f'Manual adjustments: {path} -- '
+          f"{int((adj['Action'] == 'exclude').sum())} exclude, "
+          f"{int((adj['Action'] == 'otp').sum())} force-OTP, "
+          f"{int((adj['Action'] == 'otd').sum())} force-OTD SIDs", flush=True)
+    return adj
+
+
+def apply_manual_adjustments(df: pd.DataFrame, adj: pd.DataFrame, label: str) -> pd.DataFrame:
+    """Apply load_manual_adjustments() output to one performance frame."""
+    if df is None or len(df) == 0 or 'SID' not in df.columns:
+        return df
+    sid_norm = df['SID'].astype(str).str.strip().str.upper().str.lstrip('0')
+    excl = set(adj.loc[adj['Action'] == 'exclude', 'SID_norm'])
+    otp = set(adj.loc[adj['Action'] == 'otp', 'SID_norm'])
+    otd = set(adj.loc[adj['Action'] == 'otd', 'SID_norm'])
+    n0 = len(df)
+    keep = ~sid_norm.isin(excl)
+    df = df[keep].copy()
+    sid_norm = sid_norm[keep]
+    m_otp = sid_norm.isin(otp)
+    for col, val in (('SA_PU_Late', 0), ('SA_PU_OT', 1)):
+        if col in df.columns:
+            df.loc[m_otp, col] = val
+    m_otd = sid_norm.isin(otd)
+    for col, val in (('SA_Del_Late', 0), ('SA_Del_OT', 1)):
+        if col in df.columns:
+            df.loc[m_otd, col] = val
+    print(f'  [{label}] excluded {n0 - len(df)} rows; '
+          f'forced OTP on {int(m_otp.sum())} rows'
+          + (f'; forced OTD on {int(m_otd.sum())} rows' if otd else ''), flush=True)
+    return df
+
+
 DEFAULT_NARRATIVE = {
     # Bare-minimum starter narrative so the deck doesn't have empty bullet sections
     # when no narrative.yaml is provided.  Replace by writing narrative_<month>.yaml
@@ -4533,6 +4633,8 @@ def main():
     parser.add_argument('--hyper-extract', help='Path to existing 810/712 Hyper extract (for performance script)')
     parser.add_argument('--output-dir', default='.', help='Output directory for the HTML')
     parser.add_argument('--market-pptx', help='Path to market update PPTX (slides appended at end of report)')
+    parser.add_argument('--adjustments', help='CSV of one-off SID adjustments (SID, Action=exclude|otp|otd). '
+                        'Auto-detected as manual_adjustments_<report-month>.csv when not passed.')
     args = parser.parse_args()
 
     print('=' * 60, flush=True)
@@ -4560,6 +4662,21 @@ def main():
     # it for the pickup/delivery performance slides.  The OB-only perf_df still
     # drives the outbound cost / weight / BU-mix slides.
     perf_df_all_moves = perf_mod.compute_super_adjusted(perf_df_all_moves)
+
+    # One-off manual adjustments (confirmed-with-carrier corrections for THIS
+    # report month only -- see load_manual_adjustments docstring).
+    _adj = load_manual_adjustments(args.adjustments, report_ym)
+    if _adj is not None:
+        _present = set(perf_df_all_moves['SID'].astype(str).str.strip()
+                       .str.upper().str.lstrip('0')) if 'SID' in perf_df_all_moves.columns else set()
+        _unmatched = sorted(set(_adj['SID_norm']) - _present)
+        if _unmatched:
+            print(f'  NOTE: {len(_unmatched)} adjustment SIDs not in the dataset '
+                  f'(already carrier-excluded, or absent): '
+                  f'{", ".join(_unmatched[:12])}{" ..." if len(_unmatched) > 12 else ""}',
+                  flush=True)
+        perf_df = apply_manual_adjustments(perf_df, _adj, 'outbound frame')
+        perf_df_all_moves = apply_manual_adjustments(perf_df_all_moves, _adj, 'all-moves frame')
 
     # The perf_df has 810-side data with SA flags + Mode + YYYY_MM.  For the
     # 712-driven sections (weight, cost, expedite) we need 712 directly --
@@ -4817,6 +4934,21 @@ def main():
         else:
             print('No claims extract passed or found; claims slides will be skipped. '
                   '(pass --claims-hyper to include them)', flush=True)
+    # Loud sanity check: claims loaded but none in the reporting window means
+    # empty claims slides -- surface it at generation time, not in review.
+    if df_claims is not None and 'YYYY_MM' in df_claims.columns:
+        _present = set(df_claims['YYYY_MM'].dropna())
+        _missing = [m for m in ym_list if m not in _present]
+        if _missing:
+            print('!' * 60, flush=True)
+            print(f'WARN: claims data has NO rows for report month(s): '
+                  f'{", ".join(_missing)}', flush=True)
+            _shown = sorted(str(x) for x in _present if str(x).strip())[-8:]
+            print(f'      Month values present in the claims source: '
+                  f'{", ".join(_shown) if _shown else "(none)"}', flush=True)
+            print('      Claims slides will be EMPTY for the missing months -- check the', flush=True)
+            print('      month column format in the claims export.', flush=True)
+            print('!' * 60, flush=True)
 
     market_path = args.market_pptx
     if not market_path:
