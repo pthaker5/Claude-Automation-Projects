@@ -1,0 +1,38 @@
+# Ops expedite-tracker numbers for the July 2026 MOR
+# (per M. Siegfried / S. Sinkowski email, 2026-08-25).
+#
+# Month-scoped: this file only applies when the report month is 2026-07.
+# No file for a month = expedite slides use the computed numbers.
+# All sections are optional.
+
+# Slide 33 stacked bar -- exact BU segments where the tracker gives a split.
+monthly_bu_counts:
+  '2026-05': {'Wood': 65, 'Powder': 14, 'Metal': 4, 'M & PC': 7, 'VR/Specialty': 2}
+  '2026-06': {'Wood': 46, 'Powder': 25, 'Metal': 3, 'M & PC': 19, 'VR/Specialty': 9}
+
+# Slide 33 -- months with only a total: the computed BU mix is scaled to it.
+monthly_totals:
+  '2026-07': 88
+
+# Slide 35 reason-code bars (report month).
+reasons:
+  '2026-07':
+    'CRITICAL TO CUST': 63
+    'LATE PRODUCTION': 15
+    'CHARGED BACK': 4
+    'QUALITY ISSUE': 2
+    'SALES REQUEST': 1
+
+# Slide 35 carrier pie (report month).
+carriers:
+  '2026-07':
+    'Dynamic': 37
+    'Elberta': 30
+    'KCH': 6
+    'Arrive Logistics': 4
+    'HaulRight': 3
+    'Buchanan': 1
+    'Circle': 1
+    'Echo': 1
+    'Traffix': 1
+    'Trinity': 1

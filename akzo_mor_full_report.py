@@ -1305,8 +1305,29 @@ def _is_temp_control_mask(df: pd.DataFrame) -> pd.Series:
     return eq_mask | pri_mask
 
 
-def chart_expedite_count_by_bu(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str, str]) -> str:
-    """Stacked expedite count by BU, 3 months.  Slide 33 left."""
+def _scale_counts_to_total(counts: pd.Series, total: int) -> pd.Series:
+    """Scale a count series so it sums exactly to `total`, keeping the mix
+    (largest-remainder rounding).  Used when the ops expedite tracker gives a
+    monthly total but no BU split."""
+    s = counts.astype(float).clip(lower=0)
+    if s.sum() <= 0 or total <= 0:
+        return counts * 0
+    raw = s / s.sum() * total
+    base = np.floor(raw).astype(int)
+    order = (raw - base).sort_values(ascending=False).index.tolist()
+    for i in range(int(total - base.sum())):
+        base[order[i % len(order)]] += 1
+    return base
+
+
+def chart_expedite_count_by_bu(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str, str],
+                               overrides: Optional[Dict] = None) -> str:
+    """Stacked expedite count by BU, 3 months.  Slide 33 left.
+
+    Shows segment COUNTS with the monthly TOTAL above each bar (per Akzo
+    review 2026-08).  `overrides` (from expedite_overrides_<month>.yaml)
+    replaces a month's BU counts exactly (monthly_bu_counts) or scales the
+    computed mix to the ops tracker's total (monthly_totals)."""
     plt = _setup_matplotlib()
     sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
@@ -1317,6 +1338,22 @@ def chart_expedite_count_by_bu(df_712: pd.DataFrame, ym_list: List[str], labels:
         return ''
     grp = sub.groupby(['YYYY_MM', 'BU']).size().unstack(fill_value=0)
     grp = grp.reindex(ym_list).fillna(0)
+
+    ov = overrides or {}
+    bu_ov = ov.get('monthly_bu_counts') or {}
+    tot_ov = ov.get('monthly_totals') or {}
+    for ym in ym_list:
+        if ym in bu_ov and isinstance(bu_ov[ym], dict):
+            row = {str(b): int(n) for b, n in bu_ov[ym].items()}
+            for b in row:
+                if b not in grp.columns:
+                    grp[b] = 0
+            grp.loc[ym] = [row.get(b, 0) for b in grp.columns]
+        elif ym in tot_ov:
+            grp.loc[ym] = _scale_counts_to_total(grp.loc[ym], int(tot_ov[ym]))
+    grp = grp.loc[:, grp.sum(axis=0) > 0]           # drop all-zero BUs
+    grp = grp[sorted(grp.columns)]                  # stable legend order
+
     fig, ax = plt.subplots(figsize=(6.0, 3.5))
     x = np.arange(len(ym_list))
     bar_w = 0.55
@@ -1327,9 +1364,18 @@ def chart_expedite_count_by_bu(df_712: pd.DataFrame, ym_list: List[str], labels:
         for i, v in enumerate(grp[bu]):
             tot = grp.iloc[i].sum()
             if v > 0 and tot > 0 and v / tot >= 0.05:
-                ax.text(i, bottom[i] + v / 2, f'{v/tot*100:.2f}%',
-                        ha='center', va='center', color='white', fontsize=11)
+                ax.text(i, bottom[i] + v / 2, f'{int(v)}',
+                        ha='center', va='center', color='white', fontsize=11,
+                        fontweight='bold')
         bottom += grp[bu].values
+    totals = grp.sum(axis=1)
+    tmax = totals.max() if len(totals) else 0
+    for i, t in enumerate(totals):
+        if t > 0:
+            ax.text(i, t + tmax * 0.02, f'{int(t)}', ha='center', va='bottom',
+                    fontsize=12, fontweight='bold', color=COLOR_TEXT)
+    if tmax > 0:
+        ax.set_ylim(0, tmax * 1.14)
     ax.set_xticks(x); ax.set_xticklabels([labels.get(y, y) for y in ym_list], fontsize=12)
     ax.set_ylabel('Shipment Count', fontsize=12)
     ax.set_title('Expedite Counts by BU', fontsize=13, color=COLOR_TEXT)
@@ -1680,7 +1726,12 @@ def slide_top_sites_exception(perf_df: pd.DataFrame, ym_list: List[str], labels:
     else:
         table_html = site_table('LTL') + site_table('Truckload')
 
-    notes_html = bullet_list(extra_notes or [])
+    # Always render an editable Comments block -- a bare bullet list (or
+    # nothing at all when the narrative had no notes) left these slides with
+    # no text box to type into ("can't edit text boxes", Akzo review 2026-08).
+    notes_inner = bullet_list(extra_notes) if extra_notes else '<ul><li></li></ul>'
+    notes_html = (f'<div class="narrative-block"><h4>Comments</h4>'
+                  f'<div class="editable">{notes_inner}</div></div>')
     body = f'''
 <div class="two-col">
   <div class="col-narrative">
@@ -1797,10 +1848,10 @@ def slide_cost_per_kg(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str
                 f'{labels.get(ym_list[-1], "report")} (\u20ac{cur:.3f}/kg).'
             )
 
-    auto_html = ''.join(f'<p>{p}</p>' for p in auto_paragraphs)
-    auto_block = (f'<div class="narrative-block"><h4>Auto-derived</h4>'
-                  f'<div class="editable">{auto_html}</div></div>'
-                  if auto_html else '')
+    # Fold the auto-derived MoM sentence into the Historical block -- the
+    # separate "Auto-derived" box was flagged as an extra text box to delete
+    # (Akzo review 2026-08).
+    hist_items = auto_paragraphs + [str(x) for x in narrative.get('history', [])]
 
     body = f'''
 <div class="two-col-charts-top">
@@ -1810,8 +1861,7 @@ def slide_cost_per_kg(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str
   </div>
   <div class="narrative-row">
     <div class="col-narrative">
-      {auto_block}
-      {narrative_block('Historical Performance Analysis', narrative.get('history', []))}
+      {narrative_block('Historical Performance Analysis', hist_items)}
       {narrative_block('Root Cause Analysis', narrative.get('rca', []))}
     </div>
     <div class="col-narrative">
@@ -2118,16 +2168,15 @@ def slide_top_rejecting_carriers(df_tender: pd.DataFrame, ym_list: List[str], la
 def slide_complaint_trends(df_claims: pd.DataFrame, df_712: pd.DataFrame,
                             ym_list: List[str], labels: Dict[str, str],
                             slide_num: int, narrative: Dict) -> str:
-    """Slide 27 - Complaint Trends.  Layout: two charts side-by-side on top
-    (Justified/Unjustified with % overlay LEFT, Complaints by BU RIGHT),
-    narrative blocks in two columns below."""
-    chart1 = chart_complaints_count(df_claims, ym_list, labels, df_712=df_712)
+    """Slide 28 - Complaint Trends.  Single chart on top (Complaints by BU),
+    narrative blocks in two columns below.  The Justified-vs-Unjustified chart
+    was removed per Akzo review (2026-08); chart_complaints_count is kept in
+    the codebase should it ever come back."""
     chart2 = chart_complaints_by_bu(df_claims, ym_list, labels)
     body = f'''
 <div class="complaints-layout">
   <div class="chart-row">
-    <div class="chart-cell"><img src="{chart1}" alt="Justified vs Unjustified"></div>
-    <div class="chart-cell"><img src="{chart2}" alt="Complaints by BU"></div>
+    <div class="chart-cell" style="max-width:72%;margin:0 auto;"><img src="{chart2}" alt="Complaints by BU"></div>
   </div>
   <div class="narrative-row">
     <div class="col-narrative">
@@ -2171,9 +2220,10 @@ def slide_claims_report(df_claims: pd.DataFrame, ym_list: List[str], labels: Dic
 
 
 def slide_expedite_trends(df_712: pd.DataFrame, ym_list: List[str], labels: Dict[str, str],
-                           slide_num: int, narrative: Dict) -> str:
+                           slide_num: int, narrative: Dict,
+                           overrides: Optional[Dict] = None) -> str:
     """Slide 33: Expedite spending & trends."""
-    chart1 = chart_expedite_count_by_bu(df_712, ym_list, labels)
+    chart1 = chart_expedite_count_by_bu(df_712, ym_list, labels, overrides=overrides)
 
     sub = df_712[(df_712['YYYY_MM'].isin(ym_list)) & _expedite_ob_mask(df_712)].copy()
     sub = sub[_is_expedite_mask(sub)]
@@ -2213,23 +2263,29 @@ def slide_expedite_trends(df_712: pd.DataFrame, ym_list: List[str], labels: Dict
     return slide_content('Expedite Spending & Trends by Business Unit', slide_num, body)
 
 
-def chart_expedite_reasons(df_712: pd.DataFrame, ym: str, labels: Dict[str, str]) -> str:
+def chart_expedite_reasons(df_712: pd.DataFrame, ym: str, labels: Dict[str, str],
+                           overrides: Optional[Dict] = None) -> str:
     """Horizontal bar chart of expedite reason counts for a single month.
-    Slide 34/35 top-left.  Sized bigger than the prior version (was getting
-    squeezed in a half-column).
+    Slide 34/35 top-left.  `overrides['reasons'][ym]` (ops expedite tracker)
+    replaces the computed counts entirely when present.
     """
     plt = _setup_matplotlib()
-    sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
-    sub = sub[_is_expedite_mask(sub)]
-    if 'Priority' not in sub.columns or len(sub) == 0:
-        fig, ax = plt.subplots(figsize=(6.5, 4.0))
-        ax.text(0.5, 0.5, '(no expedite data)', ha='center', va='center',
-                color=COLOR_TEXT_LIGHT, fontsize=12)
-        ax.axis('off')
-        return fig_to_data_uri(fig)
-    reasons = sub['Priority'].astype(str).str.upper().str.replace('^EXP[-\\s]+', '', regex=True)
-    reasons = reasons.replace({'EXPEDITE': 'EXPEDITE (UNSPECIFIED)', 'EXPEDITE - NO FORM': 'NO FORM'})
-    counts = reasons.value_counts().head(10)
+    ov_reasons = (overrides or {}).get('reasons') or {}
+    if ym in ov_reasons and isinstance(ov_reasons[ym], dict):
+        counts = pd.Series({str(k): int(v) for k, v in ov_reasons[ym].items()}) \
+                   .sort_values(ascending=False).head(10)
+    else:
+        sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
+        sub = sub[_is_expedite_mask(sub)]
+        if 'Priority' not in sub.columns or len(sub) == 0:
+            fig, ax = plt.subplots(figsize=(6.5, 4.0))
+            ax.text(0.5, 0.5, '(no expedite data)', ha='center', va='center',
+                    color=COLOR_TEXT_LIGHT, fontsize=12)
+            ax.axis('off')
+            return fig_to_data_uri(fig)
+        reasons = sub['Priority'].astype(str).str.upper().str.replace('^EXP[-\\s]+', '', regex=True)
+        reasons = reasons.replace({'EXPEDITE': 'EXPEDITE (UNSPECIFIED)', 'EXPEDITE - NO FORM': 'NO FORM'})
+        counts = reasons.value_counts().head(10)
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
     bars = ax.barh(range(len(counts)), counts.values[::-1], color='#5DA571', height=0.7)
     ax.set_yticks(range(len(counts)))
@@ -2248,26 +2304,37 @@ def chart_expedite_reasons(df_712: pd.DataFrame, ym: str, labels: Dict[str, str]
     return fig_to_data_uri(fig)
 
 
-def chart_expedite_carrier_pie(df_712: pd.DataFrame, ym: str, labels: Dict[str, str]) -> str:
+def chart_expedite_carrier_pie(df_712: pd.DataFrame, ym: str, labels: Dict[str, str],
+                               overrides: Optional[Dict] = None) -> str:
     """Pie chart of expedite volume by carrier for a single month.  Slide 34/35
     top-right.  Uses the same legend-based labeling as the BU pies so carrier
     names never overlap each other outside the slice.
+    `overrides['carriers'][ym]` (ops expedite tracker) replaces the computed
+    counts entirely when present.
     """
     plt = _setup_matplotlib()
-    sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
-    sub = sub[_is_expedite_mask(sub)]
-    if 'Carrier Name' not in sub.columns or len(sub) == 0:
-        fig, ax = plt.subplots(figsize=(5.8, 4.2))
-        ax.text(0.5, 0.5, '(no expedite data)', ha='center', va='center',
-                color=COLOR_TEXT_LIGHT, fontsize=12)
-        ax.axis('off')
-        return fig_to_data_uri(fig)
-    counts = sub['Carrier Name'].astype(str).value_counts()
-    top = counts.head(6).copy()
-    if len(counts) > 6:
-        top['Other'] = counts.iloc[6:].sum()
+    ov_carriers = (overrides or {}).get('carriers') or {}
+    if ym in ov_carriers and isinstance(ov_carriers[ym], dict):
+        counts = pd.Series({str(k): int(v) for k, v in ov_carriers[ym].items()}) \
+                   .sort_values(ascending=False)
+        n_top = 10   # tracker data is already curated -- show it all
+    else:
+        sub = df_712[(df_712['YYYY_MM'] == ym) & _expedite_ob_mask(df_712)].copy()
+        sub = sub[_is_expedite_mask(sub)]
+        if 'Carrier Name' not in sub.columns or len(sub) == 0:
+            fig, ax = plt.subplots(figsize=(5.8, 4.2))
+            ax.text(0.5, 0.5, '(no expedite data)', ha='center', va='center',
+                    color=COLOR_TEXT_LIGHT, fontsize=12)
+            ax.axis('off')
+            return fig_to_data_uri(fig)
+        counts = sub['Carrier Name'].astype(str).value_counts()
+        n_top = 6
+    top = counts.head(n_top).copy()
+    if len(counts) > n_top:
+        top['Other'] = counts.iloc[n_top:].sum()
     total = top.sum()
-    palette = ['#5DA571', '#F0A030', '#7E4F8F', '#5DADE2', '#D9534F', '#62B0A3', '#9AA5B8']
+    palette = ['#5DA571', '#F0A030', '#7E4F8F', '#5DADE2', '#D9534F', '#62B0A3',
+               '#8A6FBF', '#4C9F70', '#C97B4A', '#5B7AB5', '#9AA5B8']
     fig, ax = plt.subplots(figsize=(6.0, 4.2))
 
     def _autopct(pct):
@@ -2298,14 +2365,15 @@ def chart_expedite_carrier_pie(df_712: pd.DataFrame, ym: str, labels: Dict[str, 
 
 
 def slide_expedite_reason(df_712: pd.DataFrame, ym: str, labels: Dict[str, str],
-                          slide_num: int, narrative: Dict) -> str:
+                          slide_num: int, narrative: Dict,
+                          overrides: Optional[Dict] = None) -> str:
     """Slides 34 & 35: Expedite Reason & Carrier Trends for a single month.
 
     Two charts side-by-side on top, narrative 2-col below.  Matches the
     deck slide 34/35 deck layout.
     """
-    chart1 = chart_expedite_reasons(df_712, ym, labels)
-    chart2 = chart_expedite_carrier_pie(df_712, ym, labels)
+    chart1 = chart_expedite_reasons(df_712, ym, labels, overrides=overrides)
+    chart2 = chart_expedite_carrier_pie(df_712, ym, labels, overrides=overrides)
     body = f'''
 <div class="two-col-charts-top">
   <div class="chart-row">
@@ -2667,7 +2735,8 @@ def _extract_pptx_slides(pptx_path: str) -> List[Dict]:
 
 def slide_market_slides_section(pptx_path: str, slide_start_num: int,
                                 section_title: str = 'Market Update',
-                                only: str = 'all') -> str:
+                                only: str = 'all',
+                                skip_titles: tuple = ()) -> str:
     """Build HTML section(s) from a market-update PPTX file.
 
     `only` controls which slides are returned:
@@ -2676,6 +2745,12 @@ def slide_market_slides_section(pptx_path: str, slide_start_num: int,
                  Share). Used to place it right after the agenda.
       'rest'  -> every market slide EXCEPT the first, used at the end of the
                  deck so the safety share is not duplicated.
+      'title:<substr>' -> ONLY the first slide whose title contains <substr>
+                 (case-insensitive).  Used to lift a specific market slide
+                 (e.g. Front Metrics) into the body of the deck.
+    `skip_titles`: case-insensitive title substrings to EXCLUDE (applied to
+    'all'/'rest') so a slide lifted out via 'title:' is not duplicated.
+    Selected slides are renumbered sequentially from slide_start_num.
 
 
     Each slide with chart content is rendered in a positioned canvas that
@@ -2711,6 +2786,7 @@ def slide_market_slides_section(pptx_path: str, slide_start_num: int,
     import html as _html2
 
     out_parts = []
+    out_titles = []
     slide_num = slide_start_num
     # Skip only the deck's filler slides (a bare "Moving As One" divider with no
     # real content).  Safety-share and market-news slides ARE kept -- they are
@@ -2841,15 +2917,35 @@ def slide_market_slides_section(pptx_path: str, slide_start_num: int,
                     )
 
         out_parts.append(slide_content(title, slide_num, '\n'.join(body_parts)))
+        out_titles.append(_tl)
         slide_num += 1
 
-    # Split out the first rendered slide (Monthly Safety Share) when requested
-    # so it can be placed right after the agenda while the remaining market
-    # slides stay at the end of the deck.
+    # Selection: 'first' (Monthly Safety Share, placed after the agenda),
+    # 'rest' (appendix), or 'title:<substr>' (lift one named slide into the
+    # deck body).  skip_titles removes lifted slides from 'all'/'rest'.
+    pairs = list(zip(out_titles, out_parts))
     if only == 'first':
-        out_parts = out_parts[:1]
+        pairs = pairs[:1]
     elif only == 'rest':
-        out_parts = out_parts[1:]
+        pairs = pairs[1:]
+    if only.startswith('title:'):
+        want = only[len('title:'):].strip().lower()
+        pairs = [(t, p) for t, p in pairs if want in t][:1]
+    elif skip_titles:
+        skips = tuple(s.lower() for s in skip_titles)
+        pairs = [(t, p) for t, p in pairs if not any(s in t for s in skips)]
+
+    # Renumber the selected slides sequentially from slide_start_num so the
+    # section ids and footer page numbers stay contiguous regardless of which
+    # slides were selected or skipped.
+    import re as _re
+    out_parts = []
+    for k, (_t, part) in enumerate(pairs):
+        n = slide_start_num + k
+        part = _re.sub(r'id="slide-\d+"', f'id="slide-{n}"', part, count=1)
+        part = _re.sub(r'<span class="page-num">\d+</span>',
+                       f'<span class="page-num">{n}</span>', part, count=1)
+        out_parts.append(part)
     return '\n'.join(out_parts)
 
 
@@ -2928,10 +3024,10 @@ def slide_weight_analysis(df_712: pd.DataFrame, ym_list: List[str], labels: Dict
             if bu_lines:
                 auto_paragraphs.append('BU breakdown (report month vs prior): ' + '; '.join(bu_lines))
 
-    auto_html = ''.join(f'<p>{p}</p>' for p in auto_paragraphs)
-    auto_block = (f'<div class="narrative-block"><h4>Auto-derived</h4>'
-                  f'<div class="editable">{auto_html}</div></div>'
-                  if auto_html else '')
+    # Fold the auto-derived MoM sentence into the Historical block -- the
+    # separate "Auto-derived" box was flagged as an extra text box to delete
+    # (Akzo review 2026-08).
+    hist_items = auto_paragraphs + [str(x) for x in narrative.get('history', [])]
 
     body = f'''
 <div class="two-col-charts-top">
@@ -2941,8 +3037,7 @@ def slide_weight_analysis(df_712: pd.DataFrame, ym_list: List[str], labels: Dict
   </div>
   <div class="narrative-row">
     <div class="col-narrative">
-      {auto_block}
-      {narrative_block('Historical Performance Analysis', narrative.get('history', []))}
+      {narrative_block('Historical Performance Analysis', hist_items)}
       {narrative_block('Root Cause Analysis', narrative.get('rca', []))}
     </div>
     <div class="col-narrative">
@@ -3453,7 +3548,8 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
                     market_pptx_path: Optional[str] = None,
                     perf_df_all_moves: Optional[pd.DataFrame] = None,
                     df_712_allmoves: Optional[pd.DataFrame] = None,
-                    gen_info: str = '') -> str:
+                    gen_info: str = '',
+                    expedite_overrides: Optional[Dict] = None) -> str:
     """Assemble the full MOR-style HTML report."""
     # OTP/OTD slides count all movement types; fall back to perf_df if the
     # all-moves frame wasn't supplied (keeps older callers working).
@@ -3633,41 +3729,58 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
     sections.append(slide_manual('Monthly Achievements & Challenges', 19,
                                   narrative.get('ops_update', {})))
 
-    # 20-22. Weight & Spend
-    sections.append(slide_divider('Shipping Weight & Spend Analysis', 20))
+    # 20. Front Metrics -- lifted from the market deck and placed right after
+    # the Ops update per Akzo review (2026-08); excluded from the appendix
+    # below via skip_titles so it is not duplicated.
+    front_metrics_placed = False
+    if market_pptx_path:
+        try:
+            fm = slide_market_slides_section(market_pptx_path, 20, only='title:front')
+            if fm.strip():
+                sections.append(fm)
+                front_metrics_placed = True
+                print('Front Metrics slide placed after Ops update (from market deck).', flush=True)
+            else:
+                print('NOTE: no market slide with "front" in its title; Front Metrics '
+                      'stays wherever the market deck puts it.', flush=True)
+        except Exception as e:
+            print(f'WARN: could not render Front Metrics slide ({e}); skipped.', flush=True)
+
+    # 21-23. Weight & Spend  (numbering shifted +1 by Front Metrics; the gap
+    # this leaves when no market deck is supplied is cosmetic only)
+    sections.append(slide_divider('Shipping Weight & Spend Analysis', 21))
     # Cost-per-lb and weight charts compute on the FULL 712 billing population
     # (all movement types) per the KPI dashboard -- use df_712_allmoves, the
     # clean billing frame, NOT the 810-joined subset (which drops billing rows
     # lacking an 810 event and can return an empty/broken chart).
-    sections.append(slide_cost_per_kg(df_712_allmoves, ym_list, labels, 21, narrative.get('cost_per_kg', {})))
-    sections.append(slide_weight_analysis(df_712_allmoves, ym_list, labels, 22, narrative.get('weight_analysis', {})))
+    sections.append(slide_cost_per_kg(df_712_allmoves, ym_list, labels, 22, narrative.get('cost_per_kg', {})))
+    sections.append(slide_weight_analysis(df_712_allmoves, ym_list, labels, 23, narrative.get('weight_analysis', {})))
 
-    # 23-25. Tender
-    sections.append(slide_divider('Carrier Tender Performance Analysis', 23))
+    # 24-26. Tender
+    sections.append(slide_divider('Carrier Tender Performance Analysis', 24))
     if df_tender is not None:
         # df_tender already has Mode + BU attached upstream in main() using the
         # wide 18-month 712 SID lookup.  Just hand it straight to the slides.
-        sections.append(slide_tender(df_tender, df_712, ym_list, labels, 24, narrative.get('tender', {})))
-        sections.append(slide_top_rejecting_carriers(df_tender, ym_list, labels, 25,
+        sections.append(slide_tender(df_tender, df_712, ym_list, labels, 25, narrative.get('tender', {})))
+        sections.append(slide_top_rejecting_carriers(df_tender, ym_list, labels, 26,
                                                       narrative.get('top_rejecting', {}),
                                                       df_712_for_include=df_712))
     else:
-        sections.append(slide_manual('TL Tender Acceptance & Rejection', 24,
+        sections.append(slide_manual('TL Tender Acceptance & Rejection', 25,
                                       {'items': ['(Tender hyper not provided -- skip)']}))
-        sections.append(slide_manual('Top Rejecting TL Carriers', 25, {}))
+        sections.append(slide_manual('Top Rejecting TL Carriers', 26, {}))
 
-    # 26-29. Claims & Complaints
-    sections.append(slide_divider('Claims and Complaints Analysis', 26))
+    # 27-29. Claims & Complaints  (the Akzo Case Management Compliance slide
+    # was deleted per Akzo review 2026-08)
+    sections.append(slide_divider('Claims and Complaints Analysis', 27))
     if df_claims is not None:
-        sections.append(slide_complaint_trends(df_claims, df_712, ym_list, labels, 27,
+        sections.append(slide_complaint_trends(df_claims, df_712, ym_list, labels, 28,
                                                 narrative.get('complaints', {})))
-        sections.append(slide_claims_report(df_claims, ym_list, labels, 28,
+        sections.append(slide_claims_report(df_claims, ym_list, labels, 29,
                                              narrative.get('claims_report', {})))
     else:
-        sections.append(slide_manual('Complaint Trends', 27, {}))
-        sections.append(slide_manual('Claims Report Details', 28, {}))
-    sections.append(slide_manual('Claims & Complaints - Akzo Case Management Compliance', 29,
-                                  narrative.get('case_mgmt', {})))
+        sections.append(slide_manual('Complaint Trends', 28, {}))
+        sections.append(slide_manual('Claims Report Details', 29, {}))
 
     # 30-31. Temperature Control
     sections.append(slide_divider('Temperature Control Analysis', 30))
@@ -3697,12 +3810,16 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
     except Exception as _ex:
         print(f'  WARN: expedite diagnostic failed: {_ex}', flush=True)
     sections.append(slide_divider('Expedite Tracking Analysis', 32))
-    sections.append(slide_expedite_trends(df_712_exp, ym_list, labels, 33, narrative.get('expedite_trends', {})))
+    sections.append(slide_expedite_trends(df_712_exp, ym_list, labels, 33,
+                                          narrative.get('expedite_trends', {}),
+                                          overrides=expedite_overrides))
     # Slides 34 & 35 are per-month expedite reason/carrier breakdowns
     sections.append(slide_expedite_reason(df_712_exp, ym_list[-2], labels, 34,
-                                          narrative.get('expedite_prior', {})))
+                                          narrative.get('expedite_prior', {}),
+                                          overrides=expedite_overrides))
     sections.append(slide_expedite_reason(df_712_exp, ym_list[-1], labels, 35,
-                                          narrative.get('expedite_report', {})))
+                                          narrative.get('expedite_report', {}),
+                                          overrides=expedite_overrides))
 
     # 36-37. Conclusion / Moving As One
     sections.append(slide_divider('Conclusion', 36))
@@ -3717,7 +3834,9 @@ def build_full_html(perf_df: pd.DataFrame, df_712: pd.DataFrame,
     # has already been placed after the agenda, so here we render only the REST.
     if market_pptx_path:
         try:
-            market_section = slide_market_slides_section(market_pptx_path, 41, only='rest')
+            market_section = slide_market_slides_section(
+                market_pptx_path, 41, only='rest',
+                skip_titles=('front',) if front_metrics_placed else ())
             if market_section.strip():
                 sections.append(slide_divider('Market Rate Update', 40))
                 sections.append(market_section)
@@ -4595,6 +4714,58 @@ def load_manual_adjustments(explicit_path: Optional[str], report_ym: str) -> Opt
     return adj
 
 
+def load_expedite_overrides(report_ym: str) -> Optional[Dict]:
+    """Month-scoped ops-tracker numbers for the expedite slides (33-35).
+
+    The ops team tracks expedites in their own tracker (expedite forms), which
+    is the reporting authority and can disagree with the 712 Priority field.
+    Drop expedite_overrides_<report-month>.yaml next to the script (or in the
+    run folder) to make the charts show the tracker's numbers.  All keys are
+    optional; months without an entry keep the computed numbers:
+
+        monthly_bu_counts:              # exact stacked-bar segments
+          '2026-05': {Wood: 65, Powder: 14, Metal: 4, 'M & PC': 7, VR/Specialty: 2}
+        monthly_totals:                 # or just a total: the computed BU mix
+          '2026-07': 88                 # is scaled to sum to it
+        reasons:                        # slide 34/35 reason bars
+          '2026-07': {CRITICAL TO CUST: 63, LATE PRODUCTION: 15}
+        carriers:                       # slide 34/35 carrier pie
+          '2026-07': {Dynamic: 37, Elberta: 30}
+
+    Month-scoped by filename: no file for a month means no overrides.
+    """
+    fname = f'expedite_overrides_{report_ym}.yaml'
+    cands = [Path.cwd() / fname, Path(__file__).parent / fname]
+    path = next((p for p in cands if p.exists()), None)
+    if path is None:
+        # Tolerate renames / month-format drift, like the adjustments file.
+        import glob as _glob
+        loose = []
+        for d in {Path.cwd(), Path(__file__).parent}:
+            for v in {report_ym, report_ym.replace('-', ''), report_ym.replace('-', '_')}:
+                loose += _glob.glob(str(d / f'*expedite_overrides*{v}*.yaml'))
+                loose += _glob.glob(str(d / f'*expedite_overrides*{v}*.yml'))
+        if loose:
+            path = Path(max(set(loose), key=lambda p: Path(p).stat().st_mtime))
+    if path is None:
+        print(f'Expedite overrides: NONE -- no {fname} found; '
+              f'expedite slides use computed numbers.', flush=True)
+        return None
+    try:
+        import yaml
+        ov = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+    except Exception as e:
+        print(f'WARN: could not parse {path} ({e}); expedite overrides ignored.', flush=True)
+        return None
+    # Normalize month keys to plain strings (YAML may type bare keys oddly).
+    for k in ['monthly_bu_counts', 'monthly_totals', 'reasons', 'carriers']:
+        if isinstance(ov.get(k), dict):
+            ov[k] = {str(m): v for m, v in ov[k].items()}
+    keys = [k for k in ['monthly_bu_counts', 'monthly_totals', 'reasons', 'carriers'] if ov.get(k)]
+    print(f'Expedite overrides: {path} -- keys: {", ".join(keys) or "(none)"}', flush=True)
+    return ov
+
+
 def apply_manual_adjustments(df: pd.DataFrame, adj: pd.DataFrame, label: str) -> pd.DataFrame:
     """Apply load_manual_adjustments() output to one performance frame."""
     if df is None or len(df) == 0 or 'SID' not in df.columns:
@@ -5078,6 +5249,14 @@ def main():
     else:
         gen_notes.append('claims: none loaded')
 
+    expedite_ov = load_expedite_overrides(report_ym)
+    if expedite_ov:
+        _k = [k for k in ['monthly_bu_counts', 'monthly_totals', 'reasons', 'carriers']
+              if expedite_ov.get(k)]
+        gen_notes.append(f'expedite overrides: loaded ({", ".join(_k)})')
+    else:
+        gen_notes.append('expedite overrides: none (computed numbers)')
+
     out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
     # Sidecar diagnostics file -- same content as the HTML's GEN-INFO comment.
     _log_path = out_dir / f'adjustments_log_{report_ym}.txt'
@@ -5092,7 +5271,8 @@ def main():
                             market_pptx_path=market_path,
                             perf_df_all_moves=perf_df_all_moves,
                             df_712_allmoves=df_712_allmoves,
-                            gen_info='\n'.join(gen_notes))
+                            gen_info='\n'.join(gen_notes),
+                            expedite_overrides=expedite_ov)
     out_file = out_dir / f'Akzo_MOR_Full_{report_ym}.html'
     out_file.write_text(html, encoding='utf-8')
     print(f'Report saved: {out_file}')
