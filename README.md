@@ -11,6 +11,7 @@ the OPS, Procurement, and Closing tracker workbooks.
 | `akzo_month_close_engine.py` | Monthly run. Pulls the close month from SQL, computes savings, writes the three tracker workbooks. |
 | `build_baselines.py` | **Refresh the reference baselines from raw data with one command.** Replaces the old hand-built Excel pivots. |
 | `AKZO_MONTH_CLOSE_HANDOFF.md` | Full functional spec / handoff for the engine. |
+| `akzo_aging_pipeline.py` | Aging report: pulls SOA (GP_Lakehouse) + TMW 712 + IB detail, builds the combined aging workbook and the dashboard-accurate Maria report, and emails it. Email goes via Microsoft Graph (server-side — works with classic *or* new Outlook, open or closed); classic-Outlook COM is only a fallback and no longer needs a classic window open to transmit. Flags: `--display` (draft only), `--no-email`. |
 
 ## Why `build_baselines.py` exists (the numbers-not-matching fix)
 

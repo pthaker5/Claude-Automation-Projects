@@ -2,3 +2,5 @@ pandas
 openpyxl
 numpy
 pyodbc
+azure-identity
+pywin32; sys_platform == "win32"
