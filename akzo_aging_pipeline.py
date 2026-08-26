@@ -17,26 +17,20 @@
 #   --display    build both files, create an email DRAFT for manual review/send
 #   --no-email   build both files, send nothing
 #
-# Email: primary path is Microsoft Graph (server-side send - works the same
-# whether classic or new Outlook is installed, open, or closed) but it needs
-# GRAPH_CLIENT_ID set to an org app registration (see README "Graph mail
-# setup"). Fallback is classic-Outlook COM: new Outlook (olk.exe) has no COM
-# interface, so the fallback attaches to (or starts) classic outlook.exe and
-# forces a send/receive so the message actually transmits instead of sitting
-# in the Outbox until classic Outlook is next opened.
+# Email: sent through classic Outlook via COM automation - no IT setup
+# needed. New Outlook (olk.exe) has no COM interface, so the script attaches
+# to a running classic Outlook (starting one itself if needed), then forces
+# a send/receive and waits for the Outbox to drain so the message actually
+# transmits even while you work in new Outlook.
 # =============================================================================
 
 import os
 import sys
 import time
-import json
-import base64
 import struct
 import getpass
 import warnings
 import subprocess
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -84,20 +78,6 @@ SQL_CONN_STRING = (
 EMAIL_TO = "mbates@quantixscs.com"
 EMAIL_ENABLED = "--no-email" not in sys.argv
 EMAIL_DRAFT_ONLY = "--display" in sys.argv
-
-# Graph mail scopes, requested explicitly (".default" never carried Mail.Send).
-GRAPH_SCOPE_SEND = "https://graph.microsoft.com/Mail.Send"
-GRAPH_SCOPE_DRAFT = "https://graph.microsoft.com/Mail.ReadWrite"
-
-# REQUIRED for Graph mail: your org's own app registration. The default client
-# azure-identity signs in with is Microsoft's Azure CLI app, and Microsoft
-# blocks its first-party apps from requesting Mail.Send (AADSTS65002,
-# "must be configured via preauthorization") - no tenant consent can ever fix
-# that. Without GRAPH_CLIENT_ID the script goes straight to the classic-
-# Outlook COM fallback. One-time setup: see README "Graph mail setup".
-# Kept separate from the Fabric credential so SOA auth is unaffected.
-GRAPH_CLIENT_ID = os.environ.get("GRAPH_CLIENT_ID", "")
-GRAPH_TENANT_ID = os.environ.get("GRAPH_TENANT_ID", "")
 
 # BU normalization
 BU_TO_FINAL_BU = {
@@ -535,15 +515,13 @@ def build_maria_report(src, out_path):
 
 
 # =============================================================================
-# EMAIL (Graph primary, classic-Outlook COM fallback)
+# EMAIL (classic-Outlook COM, no IT setup required)
 # -----------------------------------------------------------------------------
-# Graph sends server-side, so it works identically with classic Outlook, new
-# Outlook, or no Outlook at all - but only with an org app registration
-# (GRAPH_CLIENT_ID); Microsoft blocks the default sign-in client from
-# Mail.Send. COM automation is only implemented by classic Outlook (new
-# Outlook / olk.exe has no COM interface), so the fallback attaches to or
-# starts classic outlook.exe and forces a send/receive so the message
-# actually leaves the Outbox.
+# COM automation is only implemented by classic Outlook - new Outlook
+# (olk.exe) has no COM interface - so the sender attaches to a running
+# classic Outlook (or starts one itself), then forces a send/receive and
+# waits for the Outbox to drain so the message actually transmits even while
+# new Outlook is the one open on screen.
 # =============================================================================
 
 def _email_body(stats):
@@ -559,73 +537,6 @@ def _email_body(stats):
         f"Generated {pd.Timestamp.now():%Y-%m-%d %H:%M}.\n\n"
         "Poojan"
     )
-
-
-def _mail_credential(default_credential):
-    """Credential for Graph mail. GRAPH_CLIENT_ID switches to a dedicated app
-    registration without touching the Fabric/SOA credential."""
-    if GRAPH_CLIENT_ID:
-        kw = {"client_id": GRAPH_CLIENT_ID}
-        if GRAPH_TENANT_ID:
-            kw["tenant_id"] = GRAPH_TENANT_ID
-        return InteractiveBrowserCredential(**kw)
-    return default_credential
-
-
-def _graph_message(attachment_path, subject, body):
-    with open(attachment_path, "rb") as fh:
-        content_b64 = base64.b64encode(fh.read()).decode("ascii")
-    return {
-        "subject": subject,
-        "body": {"contentType": "Text", "content": body},
-        "toRecipients": [{"emailAddress": {"address": EMAIL_TO}}],
-        "attachments": [{
-            "@odata.type": "#microsoft.graph.fileAttachment",
-            "name": Path(attachment_path).name,
-            "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "contentBytes": content_b64,
-        }],
-    }
-
-
-def _graph_post(url, token, payload):
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
-    # urlopen raises on 4xx/5xx, which used to hide the Graph error body
-    # (all the caller ever saw was "HTTP Error 403: Forbidden").
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return resp.status, resp.read().decode("utf-8", "ignore")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "ignore")
-
-
-def _graph_hint(status):
-    if status in (401, 403):
-        return ("  Hint: the signed-in client lacks Mail.Send/Mail.ReadWrite "
-                "consent. Ask IT to consent it, or set GRAPH_CLIENT_ID (and "
-                "GRAPH_TENANT_ID) to an app registration with delegated mail "
-                "permissions.")
-    return ""
-
-
-def send_via_graph(credential, attachment_path, subject, body, draft_only=False):
-    scope = GRAPH_SCOPE_DRAFT if draft_only else GRAPH_SCOPE_SEND
-    token = credential.get_token(scope).token
-    msg = _graph_message(attachment_path, subject, body)
-    if draft_only:
-        status, resp = _graph_post("https://graph.microsoft.com/v1.0/me/messages", token, msg)
-        if status not in (200, 201):
-            raise RuntimeError(f"Graph draft failed [{status}]: {resp[:400]}{_graph_hint(status)}")
-        return "draft"
-    status, resp = _graph_post(
-        "https://graph.microsoft.com/v1.0/me/sendMail", token,
-        {"message": msg, "saveToSentItems": True})
-    if status not in (200, 202):
-        raise RuntimeError(f"Graph sendMail failed [{status}]: {resp[:400]}{_graph_hint(status)}")
-    return "sent"
 
 
 def _new_outlook_running():
@@ -684,8 +595,9 @@ def _classic_outlook_app():
     if _use_new_outlook_flag():
         print("  WARNING: Windows is set to redirect Outlook to the 'new' version "
               "(UseNewOutlook=1). Classic Outlook may refuse to start via "
-              "automation; if this send fails, either open classic Outlook "
-              "manually and rerun, or set up the Graph path (GRAPH_CLIENT_ID).")
+              "automation; if this send fails, open classic Outlook manually "
+              "(Start menu > 'Outlook (classic)') - it can sit in the "
+              "background alongside new Outlook - and rerun.")
     launched = False
     last_err = None
     deadline = time.time() + 120
@@ -752,30 +664,6 @@ def send_via_outlook_com(attachment_path, subject, body, draft_only=False):
     return result
 
 
-def deliver(credential, attachment_path, subject, body, draft_only=False):
-    errors = []
-    if GRAPH_CLIENT_ID:
-        try:
-            return "graph", send_via_graph(credential, attachment_path, subject, body, draft_only)
-        except Exception as e:
-            errors.append(f"Graph: {e}")
-            print(f"\n  Graph mail failed - {e}")
-            print("  Falling back to classic-Outlook COM...")
-    else:
-        # Don't even attempt Graph: the default sign-in client is blocked by
-        # Microsoft from Mail.Send (AADSTS65002), so trying just pops a browser
-        # login that is guaranteed to fail.
-        errors.append("Graph: skipped (GRAPH_CLIENT_ID not set)")
-        print("  Graph mail skipped - no GRAPH_CLIENT_ID set (the default sign-in "
-              "client is blocked from Mail.Send; see README 'Graph mail setup'). "
-              "Using classic-Outlook COM.")
-    try:
-        return "outlook", send_via_outlook_com(attachment_path, subject, body, draft_only)
-    except Exception as e:
-        errors.append(f"Outlook COM: {e}")
-    raise RuntimeError(" | ".join(errors))
-
-
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -828,22 +716,20 @@ def main():
         print("\nEmail skipped (--no-email).")
     elif MARIA_REPORT_PATH.exists() and len(output) > 0:
         try:
-            via, action = deliver(_mail_credential(credential), MARIA_REPORT_PATH,
-                                  subject, body, draft_only=EMAIL_DRAFT_ONLY)
+            action = send_via_outlook_com(MARIA_REPORT_PATH, subject, body,
+                                          draft_only=EMAIL_DRAFT_ONLY)
             if action == "draft":
-                where = ("your Drafts (review in Outlook/OWA, then Send)"
-                         if via == "graph"
-                         else "classic Outlook Drafts (a window opens if it can)")
-                print(f"\nDraft created via {via} in {where} - to {EMAIL_TO}.")
+                print(f"\nDraft created in classic Outlook Drafts - to {EMAIL_TO} "
+                      "(a window opens if it can; otherwise find it under Drafts).")
             elif action == "queued":
                 print(f"\nEmail QUEUED in classic Outlook's Outbox for {EMAIL_TO} - "
-                      "it transmits the next time classic Outlook is open and online.\n"
-                      "  To make sends Outlook-independent, fix the Graph path "
-                      "(see the Graph error above).")
+                      "it transmits the next time classic Outlook is open and online.")
             else:
-                print(f"\nEmail SENT via {via} to {EMAIL_TO}.")
+                print(f"\nEmail SENT via classic Outlook to {EMAIL_TO}.")
         except Exception as e:
-            print(f"\nEMAIL FAILED on all paths (report saved at {MARIA_REPORT_PATH}):\n  {e}")
+            print(f"\nEMAIL FAILED (report saved at {MARIA_REPORT_PATH}):\n  {e}")
+            print("  Tip: open classic Outlook manually (it can run alongside new "
+                  "Outlook) and rerun - the script attaches to the running instance.")
     else:
         print("\nEmail skipped - report missing or output empty.")
 
