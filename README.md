@@ -11,7 +11,39 @@ the OPS, Procurement, and Closing tracker workbooks.
 | `akzo_month_close_engine.py` | Monthly run. Pulls the close month from SQL, computes savings, writes the three tracker workbooks. |
 | `build_baselines.py` | **Refresh the reference baselines from raw data with one command.** Replaces the old hand-built Excel pivots. |
 | `AKZO_MONTH_CLOSE_HANDOFF.md` | Full functional spec / handoff for the engine. |
-| `akzo_aging_pipeline.py` | Aging report: pulls SOA (GP_Lakehouse) + TMW 712 + IB detail, builds the combined aging workbook and the dashboard-accurate Maria report, and emails it. Email goes via Microsoft Graph (server-side — works with classic *or* new Outlook, open or closed); classic-Outlook COM is only a fallback and no longer needs a classic window open to transmit. Flags: `--display` (draft only), `--no-email`. |
+| `akzo_aging_pipeline.py` | Aging report: pulls SOA (GP_Lakehouse) + TMW 712 + IB detail, builds the combined aging workbook and the dashboard-accurate Maria report, and emails it. Email goes via Microsoft Graph (server-side — works with classic *or* new Outlook, open or closed; needs the one-time setup below), with classic-Outlook COM as fallback. Flags: `--display` (draft only), `--no-email`. |
+
+## Graph mail setup for the aging report (one-time, needs IT)
+
+`akzo_aging_pipeline.py` emails the Maria report via Microsoft Graph so the
+send works no matter which Outlook (classic/new) is installed or open. The
+default sign-in client that `azure-identity` uses is Microsoft's own Azure CLI
+app, and Microsoft blocks its first-party apps from requesting `Mail.Send`
+(error `AADSTS65002` — "must be configured via preauthorization"). **No tenant
+consent can fix that**, so Graph mail needs a small app registration:
+
+1. Entra admin center → **App registrations** → **New registration** —
+   name it e.g. *Akzo Aging Mailer*, single tenant, no redirect URI yet.
+2. **Authentication** → *Add a platform* → **Mobile and desktop
+   applications** → add redirect URI `http://localhost`; set **Allow public
+   client flows** to *Yes*.
+3. **API permissions** → *Add a permission* → **Microsoft Graph** →
+   **Delegated** → `Mail.Send` (also `Mail.ReadWrite` if the `--display`
+   draft mode will be used) → **Grant admin consent**.
+4. On the machine that runs the report, set environment variables:
+   - `GRAPH_CLIENT_ID` = the app's **Application (client) ID**
+   - `GRAPH_TENANT_ID` = the **Directory (tenant) ID**
+
+The mail is sent as the signed-in user (delegated), so it only sends what
+that user could send themselves.
+
+Until the registration exists, the script skips Graph and uses classic-Outlook
+COM: it attaches to a running classic Outlook (starting one if it can) and
+waits for the Outbox to drain before reporting success. Caveats: new Outlook
+(olk.exe) has no COM interface at all, and with the "new Outlook" toggle on
+(`UseNewOutlook=1`) Windows may redirect even direct classic launches — in
+that state the COM path may require opening classic Outlook manually before
+running the report.
 
 ## Why `build_baselines.py` exists (the numbers-not-matching fix)
 

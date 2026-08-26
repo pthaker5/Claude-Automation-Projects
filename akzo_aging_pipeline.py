@@ -18,11 +18,12 @@
 #   --no-email   build both files, send nothing
 #
 # Email: primary path is Microsoft Graph (server-side send - works the same
-# whether classic or new Outlook is installed, open, or closed). Classic-
-# Outlook COM is only a fallback; new Outlook (olk.exe) has no COM interface,
-# so the fallback always drives classic outlook.exe and now forces a
-# send/receive so the message actually transmits even when no classic
-# Outlook window is open.
+# whether classic or new Outlook is installed, open, or closed) but it needs
+# GRAPH_CLIENT_ID set to an org app registration (see README "Graph mail
+# setup"). Fallback is classic-Outlook COM: new Outlook (olk.exe) has no COM
+# interface, so the fallback attaches to (or starts) classic outlook.exe and
+# forces a send/receive so the message actually transmits instead of sitting
+# in the Outbox until classic Outlook is next opened.
 # =============================================================================
 
 import os
@@ -84,16 +85,17 @@ EMAIL_TO = "mbates@quantixscs.com"
 EMAIL_ENABLED = "--no-email" not in sys.argv
 EMAIL_DRAFT_ONLY = "--display" in sys.argv
 
-# Graph mail scopes. The delegated scope must be requested explicitly:
-# ".default" only returns scopes already consented to the client app, which
-# rarely includes Mail.Send - that made sendMail fail 403 and silently pushed
-# every run onto the classic-Outlook COM fallback.
+# Graph mail scopes, requested explicitly (".default" never carried Mail.Send).
 GRAPH_SCOPE_SEND = "https://graph.microsoft.com/Mail.Send"
 GRAPH_SCOPE_DRAFT = "https://graph.microsoft.com/Mail.ReadWrite"
 
-# Optional: use your org's own app registration for Graph mail if the default
-# sign-in can't be granted Mail.Send. Kept separate from the Fabric credential
-# so SOA auth is unaffected.
+# REQUIRED for Graph mail: your org's own app registration. The default client
+# azure-identity signs in with is Microsoft's Azure CLI app, and Microsoft
+# blocks its first-party apps from requesting Mail.Send (AADSTS65002,
+# "must be configured via preauthorization") - no tenant consent can ever fix
+# that. Without GRAPH_CLIENT_ID the script goes straight to the classic-
+# Outlook COM fallback. One-time setup: see README "Graph mail setup".
+# Kept separate from the Fabric credential so SOA auth is unaffected.
 GRAPH_CLIENT_ID = os.environ.get("GRAPH_CLIENT_ID", "")
 GRAPH_TENANT_ID = os.environ.get("GRAPH_TENANT_ID", "")
 
@@ -536,10 +538,12 @@ def build_maria_report(src, out_path):
 # EMAIL (Graph primary, classic-Outlook COM fallback)
 # -----------------------------------------------------------------------------
 # Graph sends server-side, so it works identically with classic Outlook, new
-# Outlook, or no Outlook at all. COM automation is only implemented by classic
-# Outlook (new Outlook / olk.exe has no COM interface), so the fallback always
-# drives classic outlook.exe - headless in the background if it isn't open -
-# and forces a send/receive so the message actually leaves the Outbox.
+# Outlook, or no Outlook at all - but only with an org app registration
+# (GRAPH_CLIENT_ID); Microsoft blocks the default sign-in client from
+# Mail.Send. COM automation is only implemented by classic Outlook (new
+# Outlook / olk.exe has no COM interface), so the fallback attaches to or
+# starts classic outlook.exe and forces a send/receive so the message
+# actually leaves the Outbox.
 # =============================================================================
 
 def _email_body(stats):
@@ -636,21 +640,82 @@ def _new_outlook_running():
         return False
 
 
-def send_via_outlook_com(attachment_path, subject, body, draft_only=False):
-    """Classic-Outlook COM automation, made independent of which Outlook is
-    open. If classic Outlook isn't running (e.g. the user is in new Outlook),
-    COM starts classic outlook.exe headless in the background; Send() then
-    only parks the message in the Outbox and it never transmits before the
-    process exits - the reason sends used to require an open classic Outlook
-    window. We force a send/receive and wait for the Outbox to drain."""
+def _use_new_outlook_flag():
+    """HKCU UseNewOutlook=1 (the 'new Outlook' toggle) makes outlook.exe
+    itself redirect to olk.exe, which also breaks COM activation
+    ('Server execution failed', -2146959355)."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Office\16.0\Outlook\Options\General") as k:
+            return winreg.QueryValueEx(k, "UseNewOutlook")[0] == 1
+    except Exception:
+        return False
+
+
+def _launch_classic_outlook():
+    """Shell-launch classic outlook.exe; returns True if a launch started."""
+    for p in (
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / r"Microsoft Office\Office16\OUTLOOK.EXE",
+    ):
+        if p.exists():
+            subprocess.Popen([str(p)])
+            return True
+    try:
+        os.startfile("outlook.exe")  # resolves via the App Paths registry
+        return True
+    except OSError:
+        return False
+
+
+def _classic_outlook_app():
+    """Attach to classic Outlook, starting it if needed. Plain COM activation
+    (Dispatch/DispatchEx) fails with 'Server execution failed' when the new-
+    Outlook toggle is in the way, so prefer attaching to a running instance
+    and shell-launch classic Outlook ourselves before retrying. Returns
+    (app, we_started_it)."""
     import win32com.client as win32
+    if _use_new_outlook_flag():
+        print("  WARNING: Windows is set to redirect Outlook to the 'new' version "
+              "(UseNewOutlook=1). Classic Outlook may refuse to start via "
+              "automation; if this send fails, either open classic Outlook "
+              "manually and rerun, or set up the Graph path (GRAPH_CLIENT_ID).")
+    launched = False
+    last_err = None
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        for attach in (lambda: win32.GetActiveObject("Outlook.Application"),
+                       lambda: win32.Dispatch("Outlook.Application")):
+            try:
+                return attach(), launched
+            except Exception as e:
+                last_err = e
+        if not launched:
+            launched = _launch_classic_outlook()
+            if not launched:
+                break
+            print("  Starting classic Outlook (outlook.exe) for the send...")
+        time.sleep(3)
+    raise RuntimeError(
+        f"could not start or attach to classic Outlook for COM automation "
+        f"(new Outlook has no COM interface): {last_err}")
+
+
+def send_via_outlook_com(attachment_path, subject, body, draft_only=False):
+    """Classic-Outlook COM send. Attaches to a running classic Outlook or
+    starts one, then forces a send/receive and waits for the Outbox to drain
+    so the message actually transmits instead of sitting queued until the
+    next time classic Outlook happens to be open."""
     if _new_outlook_running():
         print("  Note: 'new' Outlook (olk.exe) is open; it has no COM interface, "
-              "so this goes through a background classic Outlook instance.")
-    try:
-        outlook = win32.DispatchEx("Outlook.Application")
-    except Exception:
-        outlook = win32.Dispatch("Outlook.Application")
+              "so this send needs classic Outlook.")
+    outlook, we_started_it = _classic_outlook_app()
     mail = outlook.CreateItem(0)
     mail.To = EMAIL_TO
     mail.Subject = subject
@@ -673,21 +738,37 @@ def send_via_outlook_com(attachment_path, subject, body, draft_only=False):
     except Exception:
         pass
     deadline = time.time() + 90
+    result = "queued"  # transmits next time classic Outlook is open and online
     while time.time() < deadline:
         if outbox.Items.Count == 0:
-            return "sent"
+            result = "sent"
+            break
         time.sleep(2)
-    return "queued"  # transmits next time classic Outlook is open and online
+    if we_started_it and result == "sent":
+        try:
+            outlook.Quit()
+        except Exception:
+            pass
+    return result
 
 
 def deliver(credential, attachment_path, subject, body, draft_only=False):
     errors = []
-    try:
-        return "graph", send_via_graph(credential, attachment_path, subject, body, draft_only)
-    except Exception as e:
-        errors.append(f"Graph: {e}")
-        print(f"\n  Graph mail failed - {e}")
-        print("  Falling back to classic-Outlook COM...")
+    if GRAPH_CLIENT_ID:
+        try:
+            return "graph", send_via_graph(credential, attachment_path, subject, body, draft_only)
+        except Exception as e:
+            errors.append(f"Graph: {e}")
+            print(f"\n  Graph mail failed - {e}")
+            print("  Falling back to classic-Outlook COM...")
+    else:
+        # Don't even attempt Graph: the default sign-in client is blocked by
+        # Microsoft from Mail.Send (AADSTS65002), so trying just pops a browser
+        # login that is guaranteed to fail.
+        errors.append("Graph: skipped (GRAPH_CLIENT_ID not set)")
+        print("  Graph mail skipped - no GRAPH_CLIENT_ID set (the default sign-in "
+              "client is blocked from Mail.Send; see README 'Graph mail setup'). "
+              "Using classic-Outlook COM.")
     try:
         return "outlook", send_via_outlook_com(attachment_path, subject, body, draft_only)
     except Exception as e:
