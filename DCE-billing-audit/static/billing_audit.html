@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.17.2 (Invoice-Date Audit + Shared Reviews)</title>
+<title>DC&E Billing Audit v1.17.3 (Invoice-Date Audit + Shared Reviews)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -206,7 +206,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.2 · Invoice-Date Audit + Shared Reviews</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.3 · Invoice-Date Audit + Shared Reviews</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -250,7 +250,7 @@ button,select,input,textarea{font-family:inherit}
       <div class="cfg-row c3" style="margin-top:8px">
         <div id="adv-lookback"><label>Work-Week Lookback</label><input type="number" id="invLookback" value="7" min="1" max="31" step="1"><div class="hint">Days of operational activity before the invoice date (default 7 = the prior Mon–Sun). Only change after a skipped batch (e.g. 14 over a holiday). Orders completed ON the invoice date bill next cycle and are excluded automatically.</div></div>
         <div><label>Storage Billing Month</label><input type="date" id="billingDate" data-auto="0" onchange="_billingDateUserEdited()"><div class="hint">Recurring storage only (audited monthly, separate from the weekly window) · Leave blank = latest month-close · Set any date in a month to audit that month</div></div>
-        <div></div>
+        <div><label>Fresh Pull</label><label style="display:flex;gap:8px;align-items:center;padding:9px 0;cursor:pointer;font-weight:500;font-size:13px"><input type="checkbox" id="forceFresh" style="width:auto;box-shadow:none;flex:none;cursor:pointer;accent-color:var(--accent)"> Bypass the shared team cache</label><div class="hint">When a teammate already pulled this audit today, results are reused instantly. Tick to re-query EDW for up-to-the-minute data.</div></div>
       </div>
     </details>
   </div>
@@ -2740,6 +2740,17 @@ async function ensureRatesLocal(progTxt){
   }
 }
 
+/* v1.17.3: the pull payload travels as base64(gzip(json)) when the browser
+   supports DecompressionStream — ~5-10x less data through the Easy Auth proxy. */
+async function gunzipB64ToJson(b64){
+  var bin = atob(b64);
+  var bytes = new Uint8Array(bin.length);
+  for(var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  var text = await new Response(stream).text();
+  return JSON.parse(text);
+}
+
 /* ===== EDW LIVE PULL (v1.6 — parallel + cancellable) ===== */
 // Module-level state so cancelEDW() can find the in-flight controller and id.
 var _edwAbort = null;
@@ -2831,7 +2842,9 @@ async function goEDW(){
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: mode, invoice_date: invDate, ops_lookback_days: invLookback,
                             start: ds, end: de, billing_date: (Q('billingDate')||{}).value || null, warehouses: warehouses,
-                            skip_rates: !!_ratesLocal})
+                            skip_rates: !!_ratesLocal,
+                            compress: (typeof DecompressionStream === 'function'),
+                            force_fresh: !!(Q('forceFresh') && Q('forceFresh').checked)})
     };
     if(_edwAbort) fetchOpts.signal = _edwAbort.signal;
     // Keep the Easy Auth session token fresh during long pulls. Without this the
@@ -2909,7 +2922,10 @@ async function goEDW(){
               // The /api/result path is fragile under multi-worker Gunicorn because
               // the follow-up request may land on a different worker with an empty
               // in-memory store.
-              if(msg.data){
+              if(msg.data_gz_b64){
+                progTxt.textContent = 'Decompressing results…';
+                data = await gunzipB64ToJson(msg.data_gz_b64);
+              } else if(msg.data){
                 progTxt.textContent = 'Receiving results…';
                 data = msg.data;
               } else if(msg.pull_id) {
@@ -2928,7 +2944,10 @@ async function goEDW(){
         var msg = JSON.parse(buf.trim());
         if(msg.error) throw new Error(msg.error);
         if(msg.done) {
-              if(msg.data){
+              if(msg.data_gz_b64){
+                progTxt.textContent = 'Decompressing results…';
+                data = await gunzipB64ToJson(msg.data_gz_b64);
+              } else if(msg.data){
                 progTxt.textContent = 'Receiving results…';
                 data = msg.data;
               } else if(msg.pull_id) {

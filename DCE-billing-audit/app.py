@@ -6,6 +6,8 @@ Parallel report pulls, streaming progress, cancellable from the UI.
 import os
 import gzip
 import json
+import base64
+import hashlib
 import math
 import time
 import uuid
@@ -31,7 +33,7 @@ rates_cache_startup()
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
-APP_VERSION = "1.17.2"
+APP_VERSION = "1.17.3"
 
 _pull_results = {}  # in-memory store for completed results
 
@@ -136,6 +138,68 @@ def _no_cache_dashboard(resp):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
     return resp
+
+
+# ── Shared team pull cache (v1.17.3) ──────────────────────────────────────────
+# Every auditor used to pay the full EDW pull (1-3 min) even though the whole
+# team audits the SAME batch. The first successful pull for a given parameter
+# set is now stored (gzipped) on the App Service shared /home volume; anyone
+# re-running the same audit within the TTL gets it back in seconds with zero
+# EDW queries. Review statuses live in their own store, so shared data does
+# not mean shared checkmarks. "Fresh pull" in Advanced bypasses the cache.
+_PULL_CACHE_DIR = os.getenv("PULL_CACHE_DIR", "/home/site/wwwroot/.cache/pulls")
+_PULL_CACHE_TTL = int(os.getenv("PULL_CACHE_TTL_SECONDS", "21600"))  # 6h
+_PULL_CACHE_MAX_FILES = int(os.getenv("PULL_CACHE_MAX_FILES", "40"))
+_PULL_CACHE_LOCK = threading.Lock()
+
+
+def _pull_cache_key(params):
+    raw = json.dumps(params, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _pull_cache_get(key):
+    """Returns (gz_bytes, age_seconds) or (None, None)."""
+    path = os.path.join(_PULL_CACHE_DIR, key + ".json.gz")
+    try:
+        stt = os.stat(path)
+        age = time.time() - stt.st_mtime
+        if age > _PULL_CACHE_TTL:
+            return None, None
+        with open(path, "rb") as f:
+            return f.read(), int(age)
+    except OSError:
+        return None, None
+
+
+def _pull_cache_put(key, gz_bytes):
+    try:
+        os.makedirs(_PULL_CACHE_DIR, exist_ok=True)
+        path = os.path.join(_PULL_CACHE_DIR, key + ".json.gz")
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(gz_bytes)
+        os.replace(tmp, path)
+        with _PULL_CACHE_LOCK:
+            entries = []
+            for name in os.listdir(_PULL_CACHE_DIR):
+                if not name.endswith(".json.gz"):
+                    continue
+                p = os.path.join(_PULL_CACHE_DIR, name)
+                try:
+                    entries.append((os.stat(p).st_mtime, p))
+                except OSError:
+                    pass
+            now = time.time()
+            entries.sort(reverse=True)
+            for i, (mt, p) in enumerate(entries):
+                if i >= _PULL_CACHE_MAX_FILES or now - mt > _PULL_CACHE_TTL:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+    except OSError:
+        pass  # cache is best-effort; never fail the pull over it
 
 
 @app.route("/api/pull", methods=["POST"])
@@ -248,6 +312,49 @@ def api_pull():
     # version it holds. Rows are inlined here only for older frontends or a
     # stale client cache.
     skip_rates = bool(body.get("skip_rates"))
+    # v1.17.3: client sets compress when the browser supports DecompressionStream;
+    # the done-line payload then travels as base64(gzip(json)) — ~5-10x smaller.
+    compress = bool(body.get("compress"))
+    force_fresh = bool(body.get("force_fresh"))
+
+    # v1.17.3: shared team pull cache. Key includes skip_rates so payloads with
+    # and without inline rates never cross between old and new frontends.
+    cache_key = _pull_cache_key({
+        "mode": mode,
+        "invoice_date": invoice_date, "ops_start": ops_start, "ops_end": ops_end,
+        "inv_start": inv_start, "inv_end": inv_end,
+        "billing_date": billing_date_requested,
+        "warehouses": sorted(warehouses) if warehouses else None,
+        "clients": sorted(clients) if clients else None,
+        "skip_rates": skip_rates,
+    })
+    if not force_fresh:
+        cached_gz, cache_age = _pull_cache_get(cache_key)
+        if cached_gz is not None:
+            cached_pull_id = str(uuid.uuid4())
+
+            def generate_cached():
+                yield (" " * 65536) + "\n"
+                yield json.dumps({"pull_id": cached_pull_id}) + "\n"
+                mins = max(1, (cache_age or 0) // 60)
+                yield json.dumps({
+                    "progress": f"⚡ Using shared team pull from {mins}m ago — no EDW queries needed. "
+                                f"(Tick 'Fresh pull' under Advanced options to re-query.)",
+                    "step": 1, "total": 1
+                }) + "\n"
+                if compress:
+                    b64 = base64.b64encode(cached_gz).decode("ascii")
+                    yield json.dumps({"done": True, "pull_id": cached_pull_id,
+                                      "cached_age_seconds": cache_age,
+                                      "data_gz_b64": b64}) + "\n"
+                else:
+                    payload = gzip.decompress(cached_gz).decode("utf-8")
+                    yield '{"done": true, "pull_id": "' + cached_pull_id + '", "data": ' + payload + '}\n'
+
+            resp = Response(stream_with_context(generate_cached()), mimetype="application/x-ndjson")
+            resp.headers["X-Accel-Buffering"] = "no"
+            resp.headers["Cache-Control"] = "no-cache, no-store, no-transform"
+            return resp
 
     # Pre-allocate pull_id so it can be sent on the first line and the frontend
     # can call /api/cancel/<id> immediately. Register the cancel event up front.
@@ -477,13 +584,22 @@ def api_pull():
 
         yield json.dumps({"progress": "Building dashboard…", "step": total, "total": total}) + "\n"
         payload_json = json.dumps(data, default=str)
-        yield json.dumps({"progress": f"Sending results ({len(payload_json)/1048576:.1f} MB)…",
-                          "step": total, "total": total}) + "\n"
+        payload_gz = gzip.compress(payload_json.encode("utf-8"), 6)
+        # v1.17.3: share this pull with the rest of the team (best-effort).
+        _pull_cache_put(cache_key, payload_gz)
         _pull_results[pull_id] = payload_json
         if len(_pull_results) > 5:
             oldest = next(iter(_pull_results))
             del _pull_results[oldest]
-        yield '{"done": true, "pull_id": "' + pull_id + '", "data": ' + payload_json + '}\n'
+        if compress:
+            yield json.dumps({"progress": f"Sending results ({len(payload_gz)/1048576:.1f} MB compressed)…",
+                              "step": total, "total": total}) + "\n"
+            yield json.dumps({"done": True, "pull_id": pull_id,
+                              "data_gz_b64": base64.b64encode(payload_gz).decode("ascii")}) + "\n"
+        else:
+            yield json.dumps({"progress": f"Sending results ({len(payload_json)/1048576:.1f} MB)…",
+                              "step": total, "total": total}) + "\n"
+            yield '{"done": true, "pull_id": "' + pull_id + '", "data": ' + payload_json + '}\n'
 
     def generate_and_cleanup():
         try:

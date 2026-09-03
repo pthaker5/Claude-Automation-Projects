@@ -1,3 +1,37 @@
+# v1.17.3 (2026-09-03) — First-run speed: shared team pull cache + compressed payloads
+
+## Why
+v1.17.2 removed the per-run rate transfer, but each auditor pulls only ONCE —
+the first run IS the experience. Two changes attack the first run itself:
+
+## 1. Shared team pull cache
+The first successful pull for a given parameter set (mode, invoice date,
+lookback, warehouses, storage month) is stored gzipped on the App Service
+shared /home volume (PULL_CACHE_DIR, TTL 6h, pruned). Anyone re-running the
+SAME audit gets it back in seconds — zero EDW queries. Since the whole team
+audits the same batch, only one person per week pays the SQL cost. Review
+statuses live in their own store, so shared data does not mean shared
+checkmarks. A "Fresh Pull" checkbox under Advanced options bypasses the cache.
+
+## 2. Compressed pull payload
+When the browser supports DecompressionStream (all modern browsers), the done
+payload travels as base64(gzip(json)) — roughly 5-10x less data through the
+Easy Auth proxy — and is decompressed client-side. Older browsers and older
+frontends still get plain JSON (compatible both directions).
+
+## Files
+  app.py                     — pull cache (key/get/put/prune), cached serve path,
+                               compressed done line
+  static/billing_audit.html  — compress/force_fresh flags, gunzip helper,
+                               Fresh Pull checkbox
+  .github/workflows/deploy.yml — probe -> v1.17.3
+
+## DEPLOYMENT NOTE
+app.py AND billing_audit.html changed — deploy both.
+
+
+---
+
 # v1.17.2 (2026-09-03) — Run Audit speed: rates leave the pull payload
 
 ## The fix (responds to "still runs extremely slow")
