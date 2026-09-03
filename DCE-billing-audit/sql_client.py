@@ -1273,15 +1273,20 @@ def pull_no_charges(start, end, wh_filter=None):
     try:
         wh_clause = f"AND bel.wh_id IN ({','.join('?'*len(wh_filter))})" if wh_filter else ""
         params = [start, end] + (list(wh_filter) if wh_filter else [])
-        # v1.17.0 FIX — false "not invoiced" flags. The old LEFT JOIN ... IS NULL
-        # only cleared an order when a charge existed under the EXACT event-log
-        # order number. Charges are routinely posted under dash-suffixed
-        # sub-orders (event log 'PW2995516' vs charge 'PW2995516-3') or with
-        # stray whitespace, so genuinely-invoiced orders kept surfacing as
-        # "No Charges" and each one had to be hand-checked in Korber. The
-        # NOT EXISTS below also matches the '<order>-suffix' form and trims
-        # both sides. (NOT EXISTS additionally avoids the join-then-group
-        # blowup of the old shape — faster on large windows.)
+        # v1.17.0 FIX — false "not invoiced" flags: also treat charges posted
+        # under dash-suffixed sub-orders (event log 'PW2995516' vs charge
+        # 'PW2995516-3') as invoiced.
+        #
+        # v1.17.5 PERF FIX — the v1.17.0 shape put equality, LTRIM/RTRIM
+        # equality, and the LIKE prefix in ONE NOT EXISTS joined by OR. The OR
+        # plus functions on the charge column made every predicate
+        # non-sargable: SQL Server scanned t_bmm_charge for EVERY event-log
+        # row. Observed live: the No Charges pull ran 10+ minutes, starving
+        # the response stream until the Azure proxy killed it ("network
+        # error" at ~90%). Split into two AND-ed NOT EXISTS — plain equality
+        # and a bare LIKE prefix — both index-seekable; the whitespace-trim
+        # variant is dropped (dash-suffix was the real false-positive
+        # source).
         rows = _q(conn, f"""
 SELECT
     bel.wh_id                               AS [WH ID],
@@ -1301,8 +1306,10 @@ WHERE bel.tran_type IN ('161','521','111','344','151')
   AND NOT EXISTS (
       SELECT 1 FROM Korber.t_bmm_charge ch
       WHERE ch.order_num_value = bel.order_number
-         OR LTRIM(RTRIM(ch.order_num_value)) = LTRIM(RTRIM(bel.order_number))
-         OR ch.order_num_value LIKE LTRIM(RTRIM(bel.order_number)) + '-%'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM Korber.t_bmm_charge ch2
+      WHERE ch2.order_num_value LIKE bel.order_number + '-%'
   )
   AND ISNULL(bel.generic_attribute_1, '') NOT IN ('TRAILER','CONTAINER')
   AND (bel.order_number IS NULL OR bel.order_number NOT LIKE 'TO%')

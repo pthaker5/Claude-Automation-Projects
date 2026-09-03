@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.17.4 (Invoice-Date Audit + Shared Reviews)</title>
+<title>DC&E Billing Audit v1.17.5 (Invoice-Date Audit + Shared Reviews)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -206,7 +206,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.4 · Invoice-Date Audit + Shared Reviews</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.5 · Invoice-Date Audit + Shared Reviews</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -2855,6 +2855,12 @@ async function goEDW(){
     _authRefreshTimer = setInterval(function(){
       fetch('/.auth/refresh').catch(function(){});
     }, 4 * 60 * 1000);
+    // v1.17.5: hold mid-stream network errors instead of failing immediately —
+    // the server often FINISHES the pull even when the response stream dies
+    // (observed: 'network error' at 89% after a long-running query); the
+    // recovery block below can then fetch the completed result.
+    var streamErr = null;
+    try {
     var resp = await fetch(apiUrl + '/api/pull', fetchOpts);
     if(!resp.ok){
       // v1.10: 429 means another audit is already running on this worker.
@@ -2959,6 +2965,11 @@ async function goEDW(){
             }
       } catch(pe){ if(pe.message && !pe.message.includes('JSON')) throw pe; }
     }
+    } catch(se){
+      if(_edwCancelled || (se && (se.name === 'AbortError' || se.message === '__CANCELLED__'))) throw se;
+      streamErr = se;
+      console.warn('Pull stream failed mid-transfer; attempting server-side result recovery:', se);
+    }
     // v1.17.4: if the stream broke before/during the results line but the server
     // finished the pull, the completed payload is still waiting server-side —
     // fetch it instead of failing. (The classic failure: every progress line
@@ -2970,7 +2981,10 @@ async function goEDW(){
         if(recResp.ok){ data = await recResp.json(); }
       } catch(re){ console.warn('result recovery failed:', re); }
     }
-    if(!data) throw new Error('No data received from EDW — the connection dropped mid-transfer and the result could not be recovered. Please run the audit again (a completed pull is cached server-side, so the retry should be fast).');
+    if(!data){
+      if(streamErr) throw new Error((streamErr.message || 'network error') + ' — the connection dropped mid-pull and the result could not be recovered yet. Wait ~a minute and run the audit again: if the server finished, the retry is served instantly from the team cache.');
+      throw new Error('No data received from EDW — please run the audit again (a completed pull is cached server-side, so the retry should be fast).');
+    }
     progTxt.textContent = 'Running audit engine…';
 
     // Read tolerance settings

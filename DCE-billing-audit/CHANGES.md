@@ -1,3 +1,36 @@
+# v1.17.5 (2026-09-03) — No Charges query regression fix (the 10-minute pull)
+
+## Root cause, confirmed from a live failure
+Screenshot evidence: "Working… 597s elapsed | running: No Charges", then
+"EDW pull failed: network error" at 89%. The v1.17.0 No Charges rewrite put
+equality, LTRIM/RTRIM equality, and a LIKE prefix inside ONE NOT EXISTS
+joined by OR — non-sargable, so SQL Server scanned the full charge table for
+every event-log row. The 10+ minute query starved the response stream until
+the Azure proxy killed the connection: one bug caused BOTH the "extremely
+slow" and the "keeps failing" reports.
+
+## Fixes
+- sql_client.py pull_no_charges: split into two AND-ed NOT EXISTS (plain
+  equality + bare LIKE 'order-%'), both index-seekable; dropped the
+  whitespace-trim variant (dash-suffix was the real false-positive source).
+  Dash-suffix matching behavior is preserved.
+- billing_audit.html: server-side result recovery now also runs when the
+  stream dies MID-transfer with a network error (previously only when the
+  stream ended cleanly without data), and the failure message tells the user
+  a quick retry will hit the team cache.
+
+## Deployment mismatch found on site
+The live site ran HTML v1.17.4 against BACKEND v1.17.0 (the redirect URL's
+?v= comes from app.py and read 1.17.0). app.py and sql_client.py from this
+package MUST be deployed — the compression, team cache, and this SQL fix are
+all server-side.
+
+## Files
+  sql_client.py, static/billing_audit.html, app.py (version), deploy.yml (probe)
+
+
+---
+
 # v1.17.4 (2026-09-03) — Pull-failure recovery
 
 ## Why ("it keeps failing the pull")
