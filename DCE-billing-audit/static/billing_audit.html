@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.17.0 (Invoice-Date Audit + Shared Reviews)</title>
+<title>DC&E Billing Audit v1.17.1 (Invoice-Date Audit + Shared Reviews)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -206,7 +206,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.0 · Invoice-Date Audit + Shared Reviews</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.1 · Invoice-Date Audit + Shared Reviews</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -233,15 +233,26 @@ button,select,input,textarea{font-family:inherit}
       </div>
     </div>
     <div class="cfg-row c3" id="invmode-row">
-      <div><label>Invoice Date</label><input type="date" id="invDate"><div class="hint">The invoicing (batch-close) date to audit — e.g. the Monday invoice run. Defaults to the most recent Monday.</div></div>
-      <div><label>Work-Week Lookback</label><input type="number" id="invLookback" value="7" min="1" max="31" step="1"><div class="hint">Days of operational activity before the invoice date (default 7). Orders completed ON the invoice date bill next cycle and are excluded automatically.</div></div>
-      <div><label>Storage Billing Month</label><input type="date" id="billingDate" data-auto="0" onchange="_billingDateUserEdited()"><div class="hint">Recurring storage only (monthly) · Leave blank = latest month-close · Set any date in a month to audit that month</div></div>
+      <div><label>Invoice Date</label><input type="date" id="invDate"><div class="hint">The invoicing (batch-close) date to audit — e.g. the Monday invoice run. Defaults to the most recent Monday. The covered work week is pulled automatically.</div></div>
+      <div></div>
+      <div></div>
     </div>
     <div class="cfg-row c3" id="rangemode-row" style="display:none">
       <div><label>Period Start</label><input type="date" id="ds" value="2026-05-11"><div class="hint">Inclusive — first day of billing period</div></div>
       <div><label>Period End</label><input type="date" id="de" value="2026-05-18"><div class="hint">Inclusive — last billing day (the full end day is pulled)</div></div>
       <div></div>
     </div>
+    <!-- v1.17.1: rarely-touched knobs live behind Advanced so the default flow is
+         just "pick invoice date, Run". Kept OUTSIDE the mode rows so Storage
+         Billing Month stays reachable in Date Range mode too. -->
+    <details id="adv-opts" style="margin-top:2px">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text3);user-select:none;padding:4px 0">Advanced options <span style="font-weight:400">— work-week lookback · storage billing month</span></summary>
+      <div class="cfg-row c3" style="margin-top:8px">
+        <div id="adv-lookback"><label>Work-Week Lookback</label><input type="number" id="invLookback" value="7" min="1" max="31" step="1"><div class="hint">Days of operational activity before the invoice date (default 7 = the prior Mon–Sun). Only change after a skipped batch (e.g. 14 over a holiday). Orders completed ON the invoice date bill next cycle and are excluded automatically.</div></div>
+        <div><label>Storage Billing Month</label><input type="date" id="billingDate" data-auto="0" onchange="_billingDateUserEdited()"><div class="hint">Recurring storage only (audited monthly, separate from the weekly window) · Leave blank = latest month-close · Set any date in a month to audit that month</div></div>
+        <div></div>
+      </div>
+    </details>
   </div>
 
   <div class="upl-sect">
@@ -478,6 +489,9 @@ function updateAuditModeUI(){
   var inv = Q('invmode-row'), rng = Q('rangemode-row');
   if(inv) inv.style.display = (mode === 'invoice_date') ? '' : 'none';
   if(rng) rng.style.display = (mode === 'range') ? '' : 'none';
+  // v1.17.1: lookback only applies to invoice-date mode; storage month applies to both.
+  var lb = Q('adv-lookback');
+  if(lb) lb.style.display = (mode === 'invoice_date') ? '' : 'none';
 }
 document.addEventListener('DOMContentLoaded', function(){
   // Default Invoice Date = most recent Monday (the DC&E weekly invoice run day).

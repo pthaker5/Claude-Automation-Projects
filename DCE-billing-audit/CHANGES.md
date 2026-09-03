@@ -1,3 +1,18 @@
+# v1.17.1 (2026-09-01) — Setup-screen polish
+
+- Fix: audit-mode radio buttons rendered as full-width pills (global .cfg-row
+  input style bled onto them); scoped input[type=radio] override added.
+- UX: Work-Week Lookback and Storage Billing Month moved into a collapsible
+  "Advanced options" section — the default flow is now just "pick Invoice
+  Date, Run Audit".
+- Fix (v1.17.0 regression): Storage Billing Month was unreachable in Date
+  Range mode (it lived inside the invoice-mode row); the Advanced section is
+  visible in both modes.
+- Files: static/billing_audit.html (UI), app.py (version), deploy.yml (probe).
+
+
+---
+
 # v1.17.0 (2026-08-18) — Response to DC&E team feedback (Le'Shea, 8/18)
 
 Five issues reported; each maps to a fix below. Full detail in FIXES_v1.17.0.md.
