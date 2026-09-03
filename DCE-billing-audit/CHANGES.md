@@ -1,3 +1,35 @@
+# v1.17.4 (2026-09-03) — Pull-failure recovery
+
+## Why ("it keeps failing the pull")
+The most common pull failure signature is: every progress line arrives, then
+the multi-MB results line is cut off by the Azure front-end / Easy Auth proxy
+and the dashboard reports a failed pull even though the server FINISHED the
+audit. The completed result was already sitting server-side; the frontend
+just never went back for it.
+
+## Fixes
+- Frontend: when the stream ends without a results payload, the dashboard now
+  fetches the completed result from GET /api/result/<pull_id> before declaring
+  failure ("Stream interrupted — recovering completed results…").
+- Backend: finished payloads (fresh AND cache-hit) are parked gzipped on the
+  shared /home volume, so recovery works no matter which gunicorn worker or
+  instance the retry request lands on (the old in-memory store was
+  per-process — a coin flip under --workers=2). Parked results are one-shot
+  and pruned with the pull cache.
+- Failure message now tells the user the retry will be fast (team cache).
+
+Note: v1.17.3's compressed done-line also makes this failure much rarer in
+the first place (the fragile multi-MB line shrinks ~5-10x).
+
+## Files
+  app.py, static/billing_audit.html, .github/workflows/deploy.yml (probe)
+
+## DEPLOYMENT NOTE
+app.py AND billing_audit.html changed — deploy both.
+
+
+---
+
 # v1.17.3 (2026-09-03) — First-run speed: shared team pull cache + compressed payloads
 
 ## Why

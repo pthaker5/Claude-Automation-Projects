@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.17.3 (Invoice-Date Audit + Shared Reviews)</title>
+<title>DC&E Billing Audit v1.17.4 (Invoice-Date Audit + Shared Reviews)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -206,7 +206,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.3 · Invoice-Date Audit + Shared Reviews</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.4 · Invoice-Date Audit + Shared Reviews</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -2959,7 +2959,18 @@ async function goEDW(){
             }
       } catch(pe){ if(pe.message && !pe.message.includes('JSON')) throw pe; }
     }
-    if(!data) throw new Error('No data received from EDW');
+    // v1.17.4: if the stream broke before/during the results line but the server
+    // finished the pull, the completed payload is still waiting server-side —
+    // fetch it instead of failing. (The classic failure: every progress line
+    // arrives, then the multi-MB done-line is cut off by the proxy.)
+    if(!data && _edwPullId && !_edwCancelled){
+      progTxt.textContent = 'Stream interrupted — recovering completed results from the server…';
+      try {
+        var recResp = await fetch(apiUrl + '/api/result/' + _edwPullId);
+        if(recResp.ok){ data = await recResp.json(); }
+      } catch(re){ console.warn('result recovery failed:', re); }
+    }
+    if(!data) throw new Error('No data received from EDW — the connection dropped mid-transfer and the result could not be recovered. Please run the audit again (a completed pull is cached server-side, so the retry should be fast).');
     progTxt.textContent = 'Running audit engine…';
 
     // Read tolerance settings

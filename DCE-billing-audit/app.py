@@ -33,7 +33,7 @@ rates_cache_startup()
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
-APP_VERSION = "1.17.3"
+APP_VERSION = "1.17.4"
 
 _pull_results = {}  # in-memory store for completed results
 
@@ -202,6 +202,37 @@ def _pull_cache_put(key, gz_bytes):
         pass  # cache is best-effort; never fail the pull over it
 
 
+def _result_park(pull_id, gz_bytes):
+    """v1.17.4: park a finished pull's payload on the shared volume so
+    /api/result/<id> recovery works regardless of which gunicorn worker or
+    instance the retry lands on (in-memory _pull_results is per-process)."""
+    try:
+        os.makedirs(_PULL_CACHE_DIR, exist_ok=True)
+        path = os.path.join(_PULL_CACHE_DIR, f"result_{pull_id}.json.gz")
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(gz_bytes)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _result_unpark(pull_id):
+    if not pull_id.replace("-", "").isalnum():
+        return None
+    path = os.path.join(_PULL_CACHE_DIR, f"result_{pull_id}.json.gz")
+    try:
+        with open(path, "rb") as f:
+            gz = f.read()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return gzip.decompress(gz).decode("utf-8")
+    except OSError:
+        return None
+
+
 @app.route("/api/pull", methods=["POST"])
 def api_pull():
     """
@@ -332,6 +363,10 @@ def api_pull():
         cached_gz, cache_age = _pull_cache_get(cache_key)
         if cached_gz is not None:
             cached_pull_id = str(uuid.uuid4())
+
+            # v1.17.4: park the cached payload for /api/result/<id> recovery too,
+            # so a dropped stream on a cache hit is also recoverable.
+            _result_park(cached_pull_id, cached_gz)
 
             def generate_cached():
                 yield (" " * 65536) + "\n"
@@ -587,6 +622,8 @@ def api_pull():
         payload_gz = gzip.compress(payload_json.encode("utf-8"), 6)
         # v1.17.3: share this pull with the rest of the team (best-effort).
         _pull_cache_put(cache_key, payload_gz)
+        # v1.17.4: park for /api/result/<id> stream-death recovery (any worker).
+        _result_park(pull_id, payload_gz)
         _pull_results[pull_id] = payload_json
         if len(_pull_results) > 5:
             oldest = next(iter(_pull_results))
@@ -642,6 +679,8 @@ def api_result(pull_id):
     Retained for backwards-compat; the inline `data` field on the `done` line
     is the preferred path."""
     data_json = _pull_results.pop(pull_id, None)
+    if data_json is None:
+        data_json = _result_unpark(pull_id)  # v1.17.4: cross-worker recovery
     if data_json is None:
         return jsonify({"error": "Pull result not found"}), 404
     return Response(data_json, mimetype="application/json")
