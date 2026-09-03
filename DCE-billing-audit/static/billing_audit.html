@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DC&E Billing Audit v1.17.1 (Invoice-Date Audit + Shared Reviews)</title>
+<title>DC&E Billing Audit v1.17.2 (Invoice-Date Audit + Shared Reviews)</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -206,7 +206,7 @@ button,select,input,textarea{font-family:inherit}
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.1 · Invoice-Date Audit + Shared Reviews</span></span>
+  <span class="brand">DC&amp;E Billing Audit <span style="font-size:10px;font-weight:500;opacity:.5;letter-spacing:.3px">v1.17.2 · Invoice-Date Audit + Shared Reviews</span></span>
   <span class="credit">Quantix SCS · Built by Poojan Thaker</span>
 </div>
 
@@ -2681,6 +2681,65 @@ async function _go_legacy(){
   Q('rb').textContent = '▶ Run Audit'; Q('rb').disabled = false;
 }
 
+/* ===== LOCAL RATE-SNAPSHOT CACHE (v1.17.2) =====
+   The full rate table (~200K rows) used to be serialized into every pull's
+   response — tens of MB of uncompressed JSON through the Easy Auth proxy,
+   the biggest share of Run Audit wall-clock after the SQL itself. It is now
+   downloaded once from /api/rates-blob (gzipped ~10x smaller), stored in
+   IndexedDB keyed by the server cache's fetched_at, and reused until the
+   daily refresh (or Refresh Rates) changes the version. */
+function _idbOpen(){
+  return new Promise(function(res, rej){
+    var rq = indexedDB.open('dce_audit', 1);
+    rq.onupgradeneeded = function(){ rq.result.createObjectStore('kv'); };
+    rq.onsuccess = function(){ res(rq.result); };
+    rq.onerror = function(){ rej(rq.error); };
+  });
+}
+function idbGetRates(){
+  return _idbOpen().then(function(db){
+    return new Promise(function(res, rej){
+      var rq = db.transaction('kv','readonly').objectStore('kv').get('rates');
+      rq.onsuccess = function(){ res(rq.result || null); db.close(); };
+      rq.onerror = function(){ rej(rq.error); db.close(); };
+    });
+  });
+}
+function idbSetRates(version, rows){
+  return _idbOpen().then(function(db){
+    return new Promise(function(res, rej){
+      var tx = db.transaction('kv','readwrite');
+      tx.objectStore('kv').put({version: version, rows: rows, at: Date.now()}, 'rates');
+      tx.oncomplete = function(){ res(); db.close(); };
+      tx.onerror = function(){ rej(tx.error); db.close(); };
+    });
+  });
+}
+async function ensureRatesLocal(progTxt){
+  // Returns {rows, version} or null (fall back to inline rates from the server).
+  try{
+    var st = await fetch('/api/rates-status').then(function(r){ return r.ok ? r.json() : null; });
+    if(!st) return null;
+    var version = String(st.fetched_at || '');
+    try{
+      var c = await idbGetRates();
+      if(c && c.version === version && Array.isArray(c.rows) && c.rows.length){
+        return {rows: c.rows, version: version};
+      }
+    }catch(e){ console.warn('rates IDB read failed:', e); }
+    if(progTxt) progTxt.textContent = 'Downloading rate snapshot (one-time until next refresh)…';
+    var resp = await fetch('/api/rates-blob');
+    if(!resp.ok) return null;
+    var rows = await resp.json();
+    if(!Array.isArray(rows) || !rows.length) return null;
+    try{ await idbSetRates(version, rows); }catch(e){ console.warn('rates IDB write failed:', e); }
+    return {rows: rows, version: version};
+  }catch(e){
+    console.warn('local rate cache unavailable, falling back to inline rates:', e);
+    return null;
+  }
+}
+
 /* ===== EDW LIVE PULL (v1.6 — parallel + cancellable) ===== */
 // Module-level state so cancelEDW() can find the in-flight controller and id.
 var _edwAbort = null;
@@ -2759,14 +2818,20 @@ async function goEDW(){
   var cancelBtn = Q('edw-cancel-btn');
   prog.classList.add('on');
   if(cancelBtn){ cancelBtn.disabled = false; cancelBtn.textContent = '✖ Cancel'; }
-  progTxt.textContent = 'Connecting to EDW… (first response can take 20–40 seconds while Azure flushes the stream)';
+  progTxt.textContent = 'Checking local rate snapshot…';
 
   try {
+    // v1.17.2: get the rate table locally (IndexedDB / one gzipped download)
+    // so the pull payload doesn't carry ~200K rate rows every run.
+    var _ratesLocal = await ensureRatesLocal(progTxt);
+    progTxt.textContent = 'Connecting to EDW… (first response can take 20–40 seconds while Azure flushes the stream)';
+
     var fetchOpts = {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: mode, invoice_date: invDate, ops_lookback_days: invLookback,
-                            start: ds, end: de, billing_date: (Q('billingDate')||{}).value || null, warehouses: warehouses})
+                            start: ds, end: de, billing_date: (Q('billingDate')||{}).value || null, warehouses: warehouses,
+                            skip_rates: !!_ratesLocal})
     };
     if(_edwAbort) fetchOpts.signal = _edwAbort.signal;
     // Keep the Easy Auth session token fresh during long pulls. Without this the
@@ -2893,7 +2958,9 @@ async function goEDW(){
     // lost: flat array, column names already match engine() expectations
     var lost = (data.lost_revenue || []).filter(function(r){ return r['WH ID'] != null; });
     // rr: rates — column names (customer_code, contract_wh_id, etc.) match engine()
-    var rr   = data.rates        || [];
+    // v1.17.2: inline rates only arrive for older backends or a stale local cache.
+    var rr   = (data.rates && data.rates.length) ? data.rates : ((_ratesLocal && _ratesLocal.rows) || []);
+    if(!rr.length){ throw new Error('No rate data available — reload the page and try again (rate snapshot download may have failed).'); }
     // v1.8: No Charges sourced from pull_no_charges in EDW mode.
     // Powers "No Charges" + "Railcar Switch (Weekend Miss)" action categories.
     var nc   = data.no_charges || [];

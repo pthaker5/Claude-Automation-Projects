@@ -65,7 +65,7 @@ jobs:
           # fresh JSON even when templates are stale (that is the failure mode),
           # so an /api probe gives false confidence. Grep the deployed version
           # string out of the served HTML instead.
-          EXPECTED="v1.17.1"
+          EXPECTED="v1.17.2"
           URL="https://dce-billing-audit.azurewebsites.net/static/billing_audit.html"
           echo "Probing $URL for $EXPECTED"
           ok=0

@@ -1,3 +1,35 @@
+# v1.17.2 (2026-09-03) — Run Audit speed: rates leave the pull payload
+
+## The fix (responds to "still runs extremely slow")
+Every Run Audit serialized the FULL rate snapshot (~200K rows, tens of MB of
+uncompressed JSON) into the pull response and pushed it through the Easy Auth
+proxy — the largest share of wall-clock after the SQL itself, and it happened
+on every single run.
+
+Now the dashboard downloads the snapshot once from GET /api/rates-blob
+(gzip-compressed, roughly 10x smaller), stores it in IndexedDB keyed by the
+server cache's fetched_at, and sends skip_rates=true on pulls. The server
+drops the Rates task and the payload entirely; re-download happens only after
+the daily refresh or a manual Refresh Rates. Older frontends (no skip_rates)
+still get rates inlined — both directions stay compatible.
+
+## Diagnostics added
+- Progress lines now show per-query timing: "✓ Lost Revenue: 45,123 rows in 38.2s"
+  — the slowest EDW query is now visible instead of guessed.
+- A "Sending results (X.X MB)…" line shows the payload transfer cost.
+
+## Files
+  app.py                     — /api/rates-blob (gzip+ETag+304, memoized), skip_rates,
+                               per-task timing, payload-size line
+  static/billing_audit.html  — IndexedDB rate cache, ensureRatesLocal(), skip_rates
+  .github/workflows/deploy.yml — probe -> v1.17.2
+
+## DEPLOYMENT NOTE
+app.py AND billing_audit.html changed — deploy both for the speedup to apply.
+
+
+---
+
 # v1.17.1 (2026-09-01) — Setup-screen polish
 
 - Fix: audit-mode radio buttons rendered as full-width pills (global .cfg-row

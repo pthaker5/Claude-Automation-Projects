@@ -4,6 +4,7 @@ Parallel report pulls, streaming progress, cancellable from the UI.
 """
 
 import os
+import gzip
 import json
 import math
 import time
@@ -30,7 +31,7 @@ rates_cache_startup()
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
-APP_VERSION = "1.17.1"
+APP_VERSION = "1.17.2"
 
 _pull_results = {}  # in-memory store for completed results
 
@@ -237,6 +238,17 @@ def api_pull():
     warehouses = body.get("warehouses") or None
     clients    = body.get("clients") or None
 
+    # ── v1.17.2 — rates leave the pull payload ─────────────────────────────
+    # The full rate snapshot (~200K rows, tens of MB as JSON) was serialized
+    # into EVERY pull's done-line and pushed uncompressed through the Easy
+    # Auth proxy — the single largest share of "Run Audit" wall-clock after
+    # the SQL itself. The dashboard now downloads the snapshot once from
+    # GET /api/rates-blob (gzipped, ~10x smaller), caches it in IndexedDB
+    # keyed by the cache's fetched_at, and sends skip_rates=true with the
+    # version it holds. Rows are inlined here only for older frontends or a
+    # stale client cache.
+    skip_rates = bool(body.get("skip_rates"))
+
     # Pre-allocate pull_id so it can be sent on the first line and the frontend
     # can call /api/cancel/<id> immediately. Register the cancel event up front.
     pull_id = str(uuid.uuid4())
@@ -258,13 +270,12 @@ def api_pull():
 
     def generate():
         data = {}
-        total = 10
+        total = 10 - (1 if skip_rates else 0)
 
         wh_filter = warehouses if warehouses else None
 
         all_tasks = [
             ("Invoice",            "invoice",           lambda: pull_invoice(inv_start, inv_end, wh_filter)),
-            ("Rates",              "rates",             lambda: pull_rates()),
             ("Railcar",            "railcar",           lambda: pull_railcar(ops_start, railcar_end_incl, wh_filter)),
             ("Packaging",          "packaging",         lambda: pull_packaging(ops_start, ops_end, wh_filter)),
             ("Bulk Orders",        "bulk_orders",       lambda: pull_bulk_orders(ops_start, ops_end, wh_filter)),
@@ -274,6 +285,8 @@ def api_pull():
             ("No Charges",         "no_charges",        lambda: pull_no_charges(ops_start, ops_end, wh_filter)),
             ("WH Names",           "wh_names",          lambda: pull_wh_names(wh_filter)),
         ]
+        if not skip_rates:
+            all_tasks.insert(1, ("Rates", "rates", lambda: pull_rates()))
 
         # ── Anti-buffering prelude ──────────────────────────────────────────
         # Two layers of buffering to defeat:
@@ -306,9 +319,16 @@ def api_pull():
         future_meta = {}  # future -> (label, key)
         cancelled = False
 
+        def _timed(fn):
+            # v1.17.2: measure inside the worker so queue wait doesn't inflate it
+            def run():
+                t0 = time.time()
+                return fn(), time.time() - t0
+            return run
+
         try:
             for label, key, fn in all_tasks:
-                fut = executor.submit(fn)
+                fut = executor.submit(_timed(fn))
                 future_meta[fut] = (label, key)
                 yield json.dumps({"progress": f"Queued {label}…", "step": 0, "total": total}) + "\n"
             yield (" " * 8192) + "\n"
@@ -359,12 +379,12 @@ def api_pull():
                 pending.discard(fut)
                 label, key = future_meta[fut]
                 try:
-                    result = fut.result()
+                    result, dur = fut.result()
                     data[key] = result
                     completed += 1
                     count = len(result) if isinstance(result, list) else 0
                     yield json.dumps({
-                        "progress": f"✓ {label}: {count:,} rows",
+                        "progress": f"✓ {label}: {count:,} rows in {dur:.1f}s",
                         "step": completed, "total": total
                     }) + "\n"
                     yield (" " * 8192) + "\n"
@@ -452,8 +472,13 @@ def api_pull():
                                   "end_exclusive": ops_end.isoformat()}
         data = _clean(data)
 
+        data["rates_meta"] = {"included": (not skip_rates),
+                              "version": str((rates_cache_status() or {}).get("fetched_at") or "")}
+
         yield json.dumps({"progress": "Building dashboard…", "step": total, "total": total}) + "\n"
         payload_json = json.dumps(data, default=str)
+        yield json.dumps({"progress": f"Sending results ({len(payload_json)/1048576:.1f} MB)…",
+                          "step": total, "total": total}) + "\n"
         _pull_results[pull_id] = payload_json
         if len(_pull_results) > 5:
             oldest = next(iter(_pull_results))
@@ -614,6 +639,38 @@ def api_status():
         "active_pull_ids": [k[:8] for k in list(_cancel_events.keys())],
         "parallel_max_workers": _PARALLEL_MAX_WORKERS,
     })
+
+
+# ── Rate snapshot download (v1.17.2) ──────────────────────────────────────────
+# One gzipped copy of the full rate table, versioned by the cache's fetched_at.
+# The dashboard stores it in IndexedDB and only re-downloads after the daily
+# refresh (or a manual Refresh Rates). The gz blob is memoized per version so
+# repeated first-loads by different auditors don't re-serialize 200K rows.
+_RATES_BLOB_LOCK = threading.Lock()
+_RATES_BLOB_CACHE = {"etag": None, "gz": None}
+
+
+@app.route("/api/rates-blob")
+def api_rates_blob():
+    status = rates_cache_status() or {}
+    rows = pull_rates()  # in-memory cache after startup — no EDW round-trip
+    etag = f'"{status.get("fetched_at") or 0}-{len(rows)}"'
+    if request.headers.get("If-None-Match") == etag:
+        resp = Response(status=304)
+        resp.headers["ETag"] = etag
+        return resp
+    with _RATES_BLOB_LOCK:
+        if _RATES_BLOB_CACHE["etag"] != etag:
+            payload = json.dumps(_clean(rows), default=str).encode("utf-8")
+            _RATES_BLOB_CACHE["gz"] = gzip.compress(payload, 6)
+            _RATES_BLOB_CACHE["etag"] = etag
+        gz = _RATES_BLOB_CACHE["gz"]
+    resp = Response(gz, mimetype="application/json")
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    resp.headers["Vary"] = "Accept-Encoding"
+    return resp
 
 
 @app.route("/api/rates-status")
